@@ -1,0 +1,74 @@
+﻿<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>测试 JS 调用 WCF 接口</title>
+</head>
+<body>
+
+<h3>本页面展示了利用AJAX与服务端交互的简单例子</h3>
+<h3>本页面如果能正常运行，说明与服务端的连接是正常的，否则请检查服务端</h3>
+
+<fieldset>
+        <legend>获取车辆详细信息（获取用户输入，传给服务端）</legend>
+        <br />
+        车牌号：<input type="text" id="p1" /><br />
+        <br />
+        <input type="button" value="提交" id="btnAdd" />
+    </fieldset>
+
+    <hr />
+
+    <fieldset>
+        <legend>获取所有出入口信息（从服务端取数据，并显示第一行数据）</legend>
+        <br />
+        <input type="button" value="提交" id="btnInfo" />
+    </fieldset>
+
+    <script src="js/jquery-3.6.0.min.js"></script>
+    <script>
+
+        $(function () {
+
+            $('#btnAdd').click(function () {
+
+                var p1value = $('#p1').val();
+
+                $.ajax({
+                    dataType: "json",
+                    url: "http://localhost:12345/getVehicleDetail?no=" + p1value,
+                    success: function (data) {
+alert( "车牌号：" + data.No + "，速度：" + data.Speed + "，位置：（" +data.Position.Pos_X + "，" +data.Position.Pos_Y+ "）");
+                    },
+                    error: function(xhr, status, error) {
+                       var errMsg = status + "\n" +
+				error + "\n" +
+				"HTTP Status: " + xhr.status + " (" + xhr.statusText + ")\n" +
+				 "Response Text: " + xhr.responseText;
+			alert(errMsg);
+                    }
+                });
+            });
+
+            $('#btnInfo').click(function () {
+
+                $.ajax({
+                    dataType: "json",
+                    url: "http://localhost:12345/getEntries",
+                    success: function (data) {
+                        alert("名称：" + data[0].Name + "，编号：" + data[0].No + "，位置：（" +data[0].Start.Pos_X + "，" +data[0].Start.Pos_Y+ "）");
+                    },
+                   error: function(xhr, status, error) {
+                       var errMsg = status + "\n" +
+				error + "\n" +
+				"HTTP Status: " + xhr.status + " (" + xhr.statusText + ")\n" +
+				 "Response Text: " + xhr.responseText;
+			alert(errMsg);
+                    }
+                });
+            });
+        })
+
+    </script>
+</body>
+</html>
