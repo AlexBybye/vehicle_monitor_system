@@ -75,7 +75,15 @@ export interface StatisticsByEntry {
   Exit: number; // 离开车辆数
 }
 
+// 路径段信息
+export interface PathSegment {
+  id: string; // 路径段ID
+  start: { Pos_X: number; Pos_Y: number }; // 起点坐标
+  end: { Pos_X: number; Pos_Y: number }; // 终点坐标
+  congestionLevel: number; // 拥挤等级
+}
+
 // 路径拥挤程度
 export interface PathCongestion {
-  [key: string]: number; // 路径ID -> 拥挤等级
+  [key: string]: PathSegment; // 路径ID -> 路径段信息
 }

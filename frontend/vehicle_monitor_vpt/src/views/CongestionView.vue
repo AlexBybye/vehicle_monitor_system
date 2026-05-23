@@ -3,7 +3,6 @@
     <div class="view-header">
       <h2 class="title">🚦 路径拥挤分析</h2>
       <div class="view-controls">
-        <button @click="calculateCongestion" class="btn btn-primary">🔄 重新计算拥挤度</button>
         <button 
           @click="toggleAutoRefresh" 
           class="btn"
@@ -61,16 +60,16 @@
       </div>
       <div class="congestion-list">
         <div 
-          v-for="(level, pathId) in store.pathCongestion" 
+          v-for="(pathSegment, pathId) in store.pathCongestion" 
           :key="pathId" 
           class="path-item card"
-          :class="getCongestionLevelClass(level)"
+          :class="getCongestionLevelClass(pathSegment.congestionLevel)"
         >
           <div class="path-info">
             <div class="path-name">
               <h4>📍 路径: {{ pathId }}</h4>
-              <span class="level-badge" :class="getCongestionLevelClass(level)">
-                {{ getCongestionLevelText(level) }}
+              <span class="level-badge" :class="getCongestionLevelClass(pathSegment.congestionLevel)">
+                {{ getCongestionLevelText(pathSegment.congestionLevel) }}
               </span>
             </div>
             <div class="path-actions">
@@ -86,10 +85,10 @@
               <div class="level-indicator">
                 <div 
                   class="level-bar" 
-                  :style="{ width: `${(level / 3) * 100}%`, backgroundColor: getCongestionColor(level) }"
+                  :style="{ width: `${(pathSegment.congestionLevel / 3) * 100}%`, backgroundColor: getCongestionColor(pathSegment.congestionLevel) }"
                 ></div>
               </div>
-              <div class="congestion-percent">{{ Math.round((level / 3) * 100) }}%</div>
+              <div class="congestion-percent">{{ Math.round((pathSegment.congestionLevel / 3) * 100) }}%</div>
             </div>
           </div>
         </div>
@@ -100,8 +99,7 @@
     <div class="map-visualization card">
       <h3 class="visualization-title">🗺️ 拥挤程度地图可视化</h3>
       <div class="map-wrapper">
-        <MapCanvas :canvas-width="800" :canvas-height="600" />
-        <HeatmapOverlay :width="800" :height="600" />
+        <MapCanvas :canvas-width="800" :canvas-height="600" :show-heatmap="true" />
       </div>
     </div>
     
@@ -127,7 +125,6 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue';
 import { useTrafficStore } from '@/store/trafficStore';
 import MapCanvas from '@/components/MapCanvas.vue';
-import HeatmapOverlay from '@/components/HeatmapOverlay.vue';
 
 const store = useTrafficStore();
 
@@ -137,12 +134,12 @@ let refreshInterval: ReturnType<typeof setInterval> | null = null;
 
 // 计算最大拥挤等级
 const maxCongestionLevel = computed(() => {
-  return Math.max(...Object.values(store.pathCongestion), 0);
+  return Math.max(...Object.values(store.pathCongestion).map(ps => ps.congestionLevel), 0);
 });
 
 // 计算拥挤路径数量
 const congestedPathsCount = computed(() => {
-  return Object.values(store.pathCongestion).filter(level => level > 0).length;
+  return Object.values(store.pathCongestion).filter(ps => ps.congestionLevel > 0).length;
 });
 
 // 计算预警路径数量
@@ -181,11 +178,7 @@ const getCongestionColor = (level: number) => {
   }
 };
 
-// 计算拥挤度
-const calculateCongestion = () => {
-  store.calculatePathCongestion();
-  store.triggerCongestionAlerts();
-};
+
 
 // 切换自动刷新
 const toggleAutoRefresh = () => {
@@ -194,10 +187,7 @@ const toggleAutoRefresh = () => {
   if (autoRefresh.value) {
     // 开启自动刷新
     refreshInterval = setInterval(() => {
-      store.fetchVehiclePositions().then(() => {
-        store.calculatePathCongestion();
-        store.triggerCongestionAlerts();
-      });
+      store.fetchVehiclePositions();
     }, 5000); // 每5秒更新一次
   } else {
     // 关闭自动刷新
@@ -215,7 +205,7 @@ onMounted(async () => {
     store.fetchCheckpoints(),
     store.fetchVehiclePositions()
   ]);
-  calculateCongestion();
+  // calculatePathCongestion和triggerCongestionAlerts现在在fetchVehiclePositions中自动调用
 });
 
 // 组件卸载时清理定时器
@@ -605,6 +595,15 @@ onUnmounted(() => {
   border-radius: 8px;
   overflow: hidden;
   margin-top: 15px;
+}
+
+.heatmap-wrapper {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none; /* 使热力图不影响底层元素的交互 */
 }
 
 .alerts {

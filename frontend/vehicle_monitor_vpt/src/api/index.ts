@@ -11,7 +11,7 @@ export const getEntries = async (): Promise<Entry[]> => {
     return await response.json();
   } catch (error) {
     console.error('获取出入口信息失败:', error);
-    // 返回模拟数据作为备用
+    // 返回与API文档一致的模拟数据作为备用
     return [
       {
         No: 'E-E',
@@ -37,9 +37,9 @@ export const getEntries = async (): Promise<Entry[]> => {
       {
         No: 'E-N',
         Name: '北出入口',
-        Position: { Pos_X: 400, Pos_Y: 0 },
-        Start: { Pos_X: 400, Pos_Y: 0 },
-        End: { Pos_X: 400, Pos_Y: 100 }
+        Position: { Pos_X: 400, Pos_Y: 600 },
+        Start: { Pos_X: 400, Pos_Y: 600 },
+        End: { Pos_X: 400, Pos_Y: 500 }
       }
     ];
   }

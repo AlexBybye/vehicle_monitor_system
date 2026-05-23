@@ -62,9 +62,8 @@ src/
 
 ## 主要组件
 
-- `MapCanvas.vue` - 地图画布组件
+- `MapCanvas.vue` - 地图画布组件（集成热力图功能）
 - `VehicleIcon.vue` - 车辆图标组件
-- `HeatmapOverlay.vue` - 热力图覆盖组件
 - `SearchBar.vue` - 搜索栏组件
 - `ChartPanel.vue` - 图表面板组件
 

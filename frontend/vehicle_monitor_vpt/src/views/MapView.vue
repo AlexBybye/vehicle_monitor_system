@@ -21,7 +21,7 @@
           <h3>🗺️ 实时交通地图</h3>
           <div class="map-actions">
             <button 
-              @click="showHeatmap = !showHeatmap" 
+              @click="debouncedToggleHeatmap" 
               class="btn btn-secondary"
               :class="{ 'active': showHeatmap }"
             >
@@ -30,8 +30,7 @@
           </div>
         </div>
         <div class="canvas-container">
-          <MapCanvas :canvas-width="800" :canvas-height="600" />
-          <HeatmapOverlay :width="800" :height="600" v-if="showHeatmap" />
+          <MapCanvas :canvas-width="800" :canvas-height="600" :show-heatmap="showHeatmap" />
         </div>
       </div>
       
@@ -53,20 +52,7 @@
             </div>
           </div>
           
-          <div class="control-buttons">
-            <button 
-              @click="refreshData" 
-              class="btn btn-primary btn-full-width shake-on-hover"
-            >
-              🔄 刷新数据
-            </button>
-            <button 
-              @click="calculateCongestion" 
-              class="btn btn-secondary btn-full-width shake-on-hover"
-            >
-              📊 计算拥挤度
-            </button>
-          </div>
+
         </div>
         
         <div class="panel-section" v-if="selectedVehicleInfo">
@@ -103,7 +89,6 @@
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue';
 import { useTrafficStore } from '@/store/trafficStore';
 import MapCanvas from '@/components/MapCanvas.vue';
-import HeatmapOverlay from '@/components/HeatmapOverlay.vue';
 import { formatDate } from '@/utils';
 
 const store = useTrafficStore();
@@ -125,35 +110,54 @@ const selectedVehicleInfo = computed(() => {
   return null;
 });
 
-// 刷新数据
-const refreshData = async () => {
-  await Promise.all([
-    store.fetchEntries(),
-    store.fetchCheckpoints(),
-    store.fetchVehiclePositions()
-  ]);
-  
-  // 更新最后更新时间
-  lastUpdateTime.value = new Date().toLocaleTimeString('zh-CN');
+
+
+// 防抖函数
+const debounce = (func: () => void, delay: number) => {
+  let timeoutId: ReturnType<typeof setTimeout>;
+  return () => {
+    clearTimeout(timeoutId);
+    timeoutId = setTimeout(func, delay);
+  };
 };
 
-// 计算拥挤度
-const calculateCongestion = () => {
-  store.calculatePathCongestion();
-  store.triggerCongestionAlerts();
+// 计算拥挤度并切换热力图显示
+const toggleHeatmapWithCalculation = async () => {
+  // 切换显示状态
+  showHeatmap.value = !showHeatmap.value;
+  
+  // 只有在开启热力图时才计算拥挤度
+  if (showHeatmap.value) {
+    // 确保数据是最新的，然后再计算拥挤度
+    await store.fetchVehiclePositions();
+    store.calculatePathCongestion();
+    store.triggerCongestionAlerts();
+  }
 };
+
+// 使用防抖包装函数，防止快速点击
+const debouncedToggleHeatmap = debounce(toggleHeatmapWithCalculation, 300);
 
 // 定时更新数据
 let refreshInterval: ReturnType<typeof setInterval> | null = null;
 
 onMounted(async () => {
   // 初始化数据
-  await refreshData();
+    await Promise.all([
+      store.fetchEntries(),
+      store.fetchCheckpoints(),
+      store.fetchVehiclePositions()
+    ]);
+    
+    // 更新最后更新时间
+    lastUpdateTime.value = new Date().toLocaleTimeString('zh-CN');
   
-  // 设置定时器每5秒更新一次数据
+  // 设置定时器每1秒更新一次数据
   refreshInterval = setInterval(async () => {
-    await refreshData();
-  }, 5000);
+      await store.fetchVehiclePositions();
+      // 更新最后更新时间
+      lastUpdateTime.value = new Date().toLocaleTimeString('zh-CN');
+    }, 1000);
 });
 
 onUnmounted(() => {
@@ -254,6 +258,17 @@ watch(() => store.selectedVehicle, async (newVal) => {
 
 .canvas-container {
   position: relative;
+  width: 100%;
+  height: 600px;
+}
+
+.heatmap-wrapper {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none; /* 使热力图不影响底层元素的交互 */
 }
 
 .control-panel {
