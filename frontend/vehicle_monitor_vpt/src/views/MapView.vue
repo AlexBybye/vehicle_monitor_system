@@ -55,31 +55,7 @@
 
         </div>
         
-        <div class="panel-section" v-if="selectedVehicleInfo">
-          <h3 class="section-title">🚗 选中车辆详情</h3>
-          <div class="vehicle-info">
-            <div class="info-row">
-              <span class="info-label">📋 车牌号:</span>
-              <span class="info-value">{{ selectedVehicleInfo.No }}</span>
-            </div>
-            <div class="info-row">
-              <span class="info-label">🚪 入口:</span>
-              <span class="info-value">{{ selectedVehicleInfo.EnterName }} ({{ selectedVehicleInfo.EnterNo }})</span>
-            </div>
-            <div class="info-row">
-              <span class="info-label">⏱️ 进入时间:</span>
-              <span class="info-value">{{ formatDate(selectedVehicleInfo.EnterTime) }}</span>
-            </div>
-            <div class="info-row">
-              <span class="info-label">🏎️ 速度:</span>
-              <span class="info-value speed-highlight">{{ selectedVehicleInfo.Speed }} km/h</span>
-            </div>
-            <div class="info-row">
-              <span class="info-label">📍 当前位置:</span>
-              <span class="info-value">( {{ selectedVehicleInfo.Position.Pos_X }}, {{ selectedVehicleInfo.Position.Pos_Y }} )</span>
-            </div>
-          </div>
-        </div>
+
       </div>
     </div>
   </div>
@@ -101,16 +77,6 @@ const lastUpdateTime = ref('');
 const activeVehiclesCount = computed(() => {
   return store.vehicles.filter(v => !(v.Position.Pos_X === 0 && v.Position.Pos_Y === 0)).length;
 });
-
-// 计算选中车辆信息
-const selectedVehicleInfo = computed(() => {
-  if (store.selectedVehicle && store.vehicleDetails[store.selectedVehicle]) {
-    return store.vehicleDetails[store.selectedVehicle];
-  }
-  return null;
-});
-
-
 
 // 防抖函数
 const debounce = (func: () => void, delay: number) => {
@@ -166,12 +132,7 @@ onUnmounted(() => {
   }
 });
 
-// 监听选中车辆变化，获取详细信息
-watch(() => store.selectedVehicle, async (newVal) => {
-  if (newVal) {
-    await store.fetchVehicleDetail(newVal);
-  }
-});
+
 </script>
 
 <style scoped>

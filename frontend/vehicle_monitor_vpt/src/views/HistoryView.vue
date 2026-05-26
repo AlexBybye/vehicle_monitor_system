@@ -6,39 +6,69 @@
     </div>
     
     <div class="controls card">
-      <div class="date-range">
-        <div class="input-group">
-          <label class="input-label">📅 起始日期:</label>
-          <input type="date" v-model="startDate" class="input-field">
+      <div class="query-options">
+        <div class="vehicle-selector">
+          <label class="input-label">🚗 方式一:选择现运行车辆:</label>
+          <select v-model="selectedVehicleNo" @change="loadVehicleHistory" class="input-field">
+            <option value="">请选择车辆</option>
+            <option v-for="vehicle in store.vehicles" :key="vehicle.No" :value="vehicle.No">
+              {{ vehicle.No }} ({{ vehicle.Position.Pos_X }}, {{ vehicle.Position.Pos_Y }})
+            </option>
+          </select>
         </div>
-        <div class="input-group">
-          <label class="input-label">🔚 结束日期:</label>
-          <input type="date" v-model="endDate" class="input-field">
+        
+        <div class="manual-search">
+          <label class="input-label">🔍 方式二:手动输入车牌号:</label>
+          <div class="search-input-wrapper">
+            <input 
+              v-model="manualVehicleNo" 
+              type="text" 
+              placeholder="请输入车牌号" 
+              class="input-field"
+              @keyup.enter="handleManualSearch"
+            />
+            <button @click="handleManualSearch" class="btn btn-primary">
+              搜索
+            </button>
+          </div>
         </div>
-        <button @click="filterByDate" class="btn btn-primary shake-on-hover">
-          📅 按日期筛选
-        </button>
       </div>
       
-      <div class="actions">
-        <button @click="handleExportToCSV" class="btn btn-success btn-full-width">
-          📥 导出CSV
-        </button>
-        <button @click="handleExportToJSON" class="btn btn-info btn-full-width">
-          📄 导出JSON
-        </button>
-      </div>
-    </div>
-    
-    <div class="vehicle-selector card">
-      <div class="selector-content">
-        <label class="input-label">🚗 选择车辆:</label>
-        <select v-model="selectedVehicleNo" @change="loadVehicleHistory" class="input-field">
-          <option value="">请选择车辆</option>
-          <option v-for="vehicle in store.vehicles" :key="vehicle.No" :value="vehicle.No">
-            {{ vehicle.No }} ({{ vehicle.Position.Pos_X }}, {{ vehicle.Position.Pos_Y }})
-          </option>
-        </select>
+      <div class="date-range-controls">
+        <div class="date-time-range">
+          <div class="datetime-group">
+            <label class="input-label">📅 起始时间:</label>
+            <div class="datetime-inputs">
+              <input type="date" v-model="startDate" class="input-field" @change="validateDateRange">
+              <input type="time" v-model="startTime" class="input-field" @change="validateDateRange">
+              <span v-if="dateRangeError" class="error-message">{{ dateRangeError }}</span>
+            </div>
+          </div>
+          <div class="datetime-group">
+            <label class="input-label">🔚 结束时间:</label>
+            <div class="datetime-inputs">
+              <input type="date" v-model="endDate" class="input-field" @change="validateDateRange">
+              <input type="time" v-model="endTime" class="input-field" @change="validateDateRange">
+            </div>
+          </div>
+          <div class="datetime-actions">
+            <button @click="filterByDate" class="btn btn-primary datetime-filter-btn" :disabled="!!dateRangeError">
+              📅 按时间筛选
+            </button>
+            <button @click="clearDateFilter" class="btn btn-secondary datetime-clear-btn">
+              🗑️ 清空筛选
+            </button>
+          </div>
+        </div>
+        
+        <div class="actions">
+          <button @click="handleExportToCSV" class="btn btn-success btn-full-width">
+            📥 导出CSV
+          </button>
+          <button @click="handleExportToJSON" class="btn btn-info btn-full-width">
+            📄 导出JSON
+          </button>
+        </div>
       </div>
     </div>
     
@@ -74,6 +104,12 @@
             </div>
             <div class="record-stats">
               <span class="speed-badge">💨 {{ record.Speed ?? 0 }} km/h</span>
+              <button @click.stop="showVehiclePath(record)" class="btn btn-path" title="显示车辆轨迹">
+                📍 轨迹
+              </button>
+              <button @click.stop="showVehicleDetails(record)" class="btn btn-details" title="查看详情">
+                📋 详情
+              </button>
             </div>
           </div>
           <div class="record-details">
@@ -128,21 +164,110 @@ const store = useTrafficStore();
 // 控制状态
 const startDate = ref('');
 const endDate = ref('');
+const startTime = ref('00:00');
+const endTime = ref('23:59');
 const selectedVehicleNo = ref('');
+const manualVehicleNo = ref('');
 const currentPage = ref(1);
 const pageSize = ref(10);
 const hoveredVehicle = ref<VehicleHistory | null>(null);
 
-// 搜索处理
-const handleSearch = (query: string) => {
-  // 搜索功能将在SearchBar组件中处理
+// 搜索处理（保留原有功能）
+const handleSearch = async (query: string) => {
+  if (query.trim()) {
+    await store.fetchVehiclesHistory(query.trim(), 1);
+    selectedVehicleNo.value = query.trim(); // 同步选择的车辆
+    currentPage.value = 1; // 重置到第一页
+  }
 };
+
+// 手动输入车牌号搜索
+const handleManualSearch = async () => {
+  if (manualVehicleNo.value.trim()) {
+    await store.fetchVehiclesHistory(manualVehicleNo.value.trim(), 1);
+    selectedVehicleNo.value = manualVehicleNo.value.trim(); // 同步选择的车辆
+    currentPage.value = 1; // 重置到第一页
+  }
+};
+
+// 验证日期范围
+const dateRangeError = ref('');
+
+const validateDateRange = () => {
+  if (startDate.value && endDate.value) {
+    // 组合日期和时间
+    const startDateTime = new Date(`${startDate.value}T${startTime.value}`);
+    const endDateTime = new Date(`${endDate.value}T${endTime.value}`);
+    
+    if (startDateTime > endDateTime) {
+      dateRangeError.value = '起始时间不能晚于结束时间！';
+      return false;
+    }
+  }
+  dateRangeError.value = '';
+  return true;
+};
+
+// 存储原始历史记录
+const originalHistoryRecords = ref<VehicleHistory[]>([]);
 
 // 按日期筛选
 const filterByDate = async () => {
-  // 注意：目前 store 中没有 fetchHistoryByDateRange 方法，这里暂时不做任何操作
-  // 在实际实现时，需要在 store 中添加相应的方法
-  console.warn('fetchHistoryByDateRange 方法尚未在 store 中实现');
+  if (!validateDateRange()) {
+    return;
+  }
+  
+  if (startDate.value && endDate.value) {
+    // 组合日期和时间
+    const startDateTime = `${startDate.value}T${startTime.value}`;
+    const endDateTime = `${endDate.value}T${endTime.value}`;
+    
+    // 如果还没有保存原始记录，则保存一份
+    if (originalHistoryRecords.value.length === 0) {
+      originalHistoryRecords.value = [...store.historyRecords];
+    }
+    
+    // 从原始记录中筛选 - 直接使用原始时间戳进行比较
+    const start = new Date(startDateTime);
+    const end = new Date(endDateTime);
+    
+    const filteredRecords = originalHistoryRecords.value.filter(record => {
+      // 直接解析原始时间戳格式 /Date(1756871452790+0800)/
+      const timeMatch = record.EnterTime?.match(/\/Date\((\d+)\+\d+\)\//);
+      if (timeMatch && timeMatch[1]) {
+        const timestamp = parseInt(timeMatch[1], 10);
+        const recordDate = new Date(timestamp);
+        
+        // 调试输出
+        console.log('Record time:', recordDate, 'Start:', start, 'End:', end, 'Match:', recordDate >= start && recordDate <= end);
+        
+        return recordDate >= start && recordDate <= end;
+      }
+      return false; // 如果无法解析时间，则排除该记录
+    });
+    
+    // 更新显示的记录
+    store.historyRecords = filteredRecords;
+    currentPage.value = 1; // 重置到第一页
+    
+    console.log('Filtered records:', filteredRecords);
+  }
+};
+
+// 清空日期筛选
+const clearDateFilter = () => {
+  startDate.value = '';
+  endDate.value = '';
+  startTime.value = '00:00';
+  endTime.value = '23:59';
+  dateRangeError.value = '';
+  
+  // 恢复原始记录（如果存在）
+  if (originalHistoryRecords.value.length > 0) {
+    store.historyRecords = [...originalHistoryRecords.value];
+    originalHistoryRecords.value = []; // 清空原始记录
+  }
+  currentPage.value = 1; // 重置到第一页
 };
 
 // 加载车辆历史
@@ -200,8 +325,10 @@ const maxSpeed = computed(() => {
 const handleExportToCSV = () => {
   if (store.historyRecords.length > 0) {
     import('@/utils').then(utils => {
-      utils.exportToCSV(store.historyRecords, `${selectedVehicleNo.value}_history.csv`);
+      utils.exportToCSV(store.historyRecords, `${selectedVehicleNo.value || 'all'}_history.csv`);
     });
+  } else {
+    alert('未查询到任何数据，无法导出！');
   }
 };
 
@@ -209,8 +336,59 @@ const handleExportToCSV = () => {
 const handleExportToJSON = () => {
   if (store.historyRecords.length > 0) {
     import('@/utils').then(utils => {
-      utils.exportToJSON(store.historyRecords, `${selectedVehicleNo.value}_history.json`);
+      utils.exportToJSON(store.historyRecords, `${selectedVehicleNo.value || 'all'}_history.json`);
     });
+  } else {
+    alert('未查询到任何数据，无法导出！');
+  }
+};
+
+// 存储当前选中的车辆路径
+const selectedVehiclePath = ref<any[]>([]);
+
+// 显示车辆路径
+const showVehiclePath = async (record: VehicleHistory) => {
+  console.log('显示车辆路径:', record);
+  // 获取车辆轨迹数据
+  const pathData = await store.getVehiclePathForPlayback(record.VehicleNo);
+  console.log('车辆轨迹数据:', pathData);
+  
+  // 存储路径数据以便在地图组件中使用
+  selectedVehiclePath.value = pathData;
+  
+  // 通知地图组件显示特定车辆的路径
+  // 我们可以通过store添加一个新属性来存储要显示的路径
+  store.setVehiclePathToDisplay(pathData);
+  
+  // 切换到地图视图（如果存在路由）或者通知地图组件显示路径
+  // 如果当前就在地图视图中，直接触发地图重绘
+  if (pathData.length > 0) {
+    // 在控制台输出提示信息，实际应用中可以跳转到地图视图
+    console.log(`车辆 ${record.VehicleNo} 的路径已发送到地图组件显示`);
+    alert(`已准备显示车辆 ${record.VehicleNo} 的路径\n轨迹点数量: ${pathData.length}\n请切换到地图视图查看路径`);
+  } else {
+    alert(`未能获取车辆 ${record.VehicleNo} 的轨迹数据。`);
+  }
+};
+
+// 显示车辆详细信息
+const showVehicleDetails = async (record: VehicleHistory) => {
+  console.log('显示车辆详情:', record);
+  // 获取车辆详细信息
+  const detail = await store.fetchVehicleDetail(record.VehicleNo);
+  
+  if (detail) {
+    // 弹窗显示详细信息
+    let detailMessage = `车辆详细信息:\n`;
+    detailMessage += `车牌号: ${detail.No}\n`;
+    detailMessage += `入口: ${detail.EnterName} (${detail.EnterNo})\n`;
+    detailMessage += `进入时间: ${formatDate(detail.EnterTime)}\n`;
+    detailMessage += `当前速度: ${detail.Speed} km/h\n`;
+    detailMessage += `当前位置: (${detail.Position.Pos_X}, ${detail.Position.Pos_Y})\n`;
+    
+    alert(detailMessage);
+  } else {
+    alert(`未能获取车辆 ${record.VehicleNo} 的详细信息。`);
   }
 };
 </script>
@@ -220,6 +398,76 @@ const handleExportToJSON = () => {
   padding: 1rem;
   min-height: 100vh;
   background: linear-gradient(135deg, var(--gray-50) 0%, var(--gray-100) 100%);
+}
+
+:root {
+  --primary-color: #4361ee;
+  --secondary-color: #3a0ca3;
+  --success-color: #4cc9f0;
+  --warning-color: #f72585;
+  --info-color: #4895ef;
+  --danger-color: #e63946;
+  --gray-50: #f9fafb;
+  --gray-100: #f3f4f6;
+  --gray-200: #e5e7eb;
+  --gray-300: #d1d5db;
+  --gray-500: #6b7280;
+  --gray-600: #4b5563;
+  --gray-700: #374151;
+  --gray-800: #1f2937;
+  --gray-900: #111827;
+  --radius: 0.5rem;
+  --radius-lg: 0.75rem;
+  --radius-full: 9999px;
+  --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+  --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+  --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+  --transition-normal: all 0.3s ease;
+}
+
+.error-message {
+  color: #e74c3c;
+  font-size: 0.8rem;
+  margin-top: 0.25rem;
+  display: block;
+}
+
+.controls-row {
+  display: flex;
+  gap: 1rem;
+  margin-bottom: 1.5rem;
+  flex-wrap: wrap;
+}
+
+.vehicle-selector {
+  flex: 1;
+  min-width: 250px;
+}
+
+.search-section {
+  flex: 1;
+  min-width: 300px;
+  display: flex;
+  align-items: flex-end;
+}
+
+.date-range-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1.5rem;
+  align-items: flex-start;
+}
+
+.date-range {
+  flex: 1;
+  min-width: 300px;
+}
+
+.actions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  min-width: 150px;
 }
 
 .view-header {
@@ -247,15 +495,74 @@ const handleExportToJSON = () => {
   border: none;
 }
 
-.date-range {
+.query-options {
   display: flex;
+  gap: 1.5rem;
+  margin-bottom: 1.5rem;
   flex-wrap: wrap;
-  align-items: center;
-  gap: 1rem;
-  margin-bottom: 1rem;
 }
 
-.input-group {
+.vehicle-selector, .manual-search {
+  flex: 1;
+  min-width: 300px;
+}
+
+.manual-search .search-input-wrapper {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.manual-search input[type="text"] {
+  flex: 1;
+}
+
+.date-range-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1.5rem;
+  align-items: flex-start;
+}
+
+.date-time-range {
+  flex: 2;
+  min-width: 400px;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.datetime-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.datetime-inputs {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.datetime-inputs input {
+  min-width: 140px;
+}
+
+.datetime-actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.datetime-filter-btn {
+  min-width: 120px;
+}
+
+.datetime-clear-btn {
+  min-width: 100px;
+}
+
+.actions {
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
@@ -400,6 +707,42 @@ const handleExportToJSON = () => {
   border-radius: var(--radius-full);
   font-size: 0.85rem;
   font-weight: 500;
+}
+
+.btn-path {
+  background: linear-gradient(135deg, var(--warning-color) 0%, #f59e0b 100%);
+  color: white;
+  border: none;
+  padding: 0.25rem 0.75rem;
+  border-radius: var(--radius);
+  font-size: 0.85rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: var(--transition-normal);
+}
+
+.btn-path:hover:not(:disabled) {
+  background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-md);
+}
+
+.btn-details {
+  background: linear-gradient(135deg, var(--info-color) 0%, #3b82f6 100%);
+  color: white;
+  border: none;
+  padding: 0.25rem 0.75rem;
+  border-radius: var(--radius);
+  font-size: 0.85rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: var(--transition-normal);
+}
+
+.btn-details:hover:not(:disabled) {
+  background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-md);
 }
 
 .record-details {

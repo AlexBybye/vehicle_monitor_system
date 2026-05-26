@@ -15,6 +15,7 @@ export const useTrafficStore = defineStore('traffic', {
     currentPage: 1, // 当前历史记录页码
     totalHistoryPages: 0, // 历史记录总页数
     selectedVehicle: null as string | null, // 当前选中的车辆
+    vehiclePathToDisplay: [] as any[], // 要在地图上显示的车辆路径
   }),
 
   actions: {
@@ -76,7 +77,7 @@ export const useTrafficStore = defineStore('traffic', {
             No: 'C-1',
             Name: '检查站 1',
             Position: { Pos_X: 300, Pos_Y: 500 },
-            Start: { Pos_X: 200, Pos_Y: 400 },
+            Start: { Pos_X: 400, Pos_Y: 500 },
             End: { Pos_X: 400, Pos_Y: 500 }
           },
           {
@@ -91,14 +92,14 @@ export const useTrafficStore = defineStore('traffic', {
             Name: '检查站 3',
             Position: { Pos_X: 200, Pos_Y: 300 },
             Start: { Pos_X: 200, Pos_Y: 400 },
-            End: { Pos_X: 200, Pos_Y: 100 }
+            End: { Pos_X: 200, Pos_Y: 400 }
           },
           {
             No: 'C-4',
             Name: '检查站 4',
             Position: { Pos_X: 600, Pos_Y: 300 },
             Start: { Pos_X: 600, Pos_Y: 200 },
-            End: { Pos_X: 600, Pos_Y: 500 }
+            End: { Pos_X: 600, Pos_Y: 200 }
           },
           {
             No: 'C-5',
@@ -112,7 +113,7 @@ export const useTrafficStore = defineStore('traffic', {
             Name: '检查站 6',
             Position: { Pos_X: 600, Pos_Y: 100 },
             Start: { Pos_X: 400, Pos_Y: 100 },
-            End: { Pos_X: 600, Pos_Y: 200 }
+            End: { Pos_X: 400, Pos_Y: 100 }
           }
         ];
       }
@@ -181,13 +182,49 @@ export const useTrafficStore = defineStore('traffic', {
         const response = await fetch(`http://127.0.0.1:12345/getVehicleDetail?No=${vehicleNo}`);
         if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
         const data = await response.json();
-        if (data && data.length > 0) {
-          this.vehicleDetails[vehicleNo] = data[0];
-          return data[0];
+        
+        console.log('Raw vehicle detail response:', data);
+        
+        // 处理API返回的数据，确保是正确的格式
+        let vehicleDetail: VehicleDetail | null = null;
+        
+        if (Array.isArray(data) && data.length > 0) {
+          // API返回的是数组格式，取第一个元素
+          vehicleDetail = data[0] as VehicleDetail;
+        } else if (data && typeof data === 'object') {
+          // API可能直接返回对象（虽然文档说是数组）
+          vehicleDetail = data as VehicleDetail;
+        }
+        
+        if (vehicleDetail) {
+          // 确保数据格式正确，如果没有必要的字段则使用默认值
+          this.vehicleDetails[vehicleNo] = {
+            No: vehicleDetail.No || vehicleNo,
+            EnterNo: vehicleDetail.EnterNo || 'N/A',
+            EnterName: vehicleDetail.EnterName || '未知入口',
+            EnterTime: vehicleDetail.EnterTime || '',
+            Speed: vehicleDetail.Speed || 0,
+            Position: vehicleDetail.Position || { Pos_X: 0, Pos_Y: 0 }
+          };
+          
+          console.log('Updated vehicle details:', this.vehicleDetails[vehicleNo]);
+          return this.vehicleDetails[vehicleNo];
+        } else {
+          console.warn(`车辆 ${vehicleNo} 的详细信息为空或格式不正确`);
+          // 如果API返回空数据或格式错误，使用mock数据
+          this.vehicleDetails[vehicleNo] = {
+            No: vehicleNo,
+            EnterNo: 'E-W',
+            EnterName: '西出入口',
+            EnterTime: '/Date(1756871452790+0800)/',
+            Speed: 83,
+            Position: { Pos_X: 200, Pos_Y: 112 }
+          };
+          return this.vehicleDetails[vehicleNo];
         }
       } catch (error) {
         console.error('获取车辆详细信息失败:', error);
-        // 如果API失败，可以尝试使用本地mock数据
+        // 如果API失败，使用本地mock数据
         this.vehicleDetails[vehicleNo] = {
           No: vehicleNo,
           EnterNo: 'E-W',
@@ -200,22 +237,38 @@ export const useTrafficStore = defineStore('traffic', {
       }
     },
 
-    // 获取车辆历史信息
-    async fetchVehiclesHistory(vehicleNo: string, page: number) {
+    // 获取车辆历史信息 - 改进版本，获取所有页的数据
+    async fetchVehiclesHistory(vehicleNo: string, page: number = 1) {
       try {
-        const response = await fetch(`http://127.0.0.1:12345/getVehiclesHistory?No=${vehicleNo}&Page=${page}`);
-        if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
-        const data = await response.json();
+        // 由于API每页只返回5条记录，我们需要获取所有页的数据
+        // 先获取第一页
+        let allData: VehicleHistory[] = [];
+        let currentPage = 1;
+        let hasMoreData = true;
+        
+        while (hasMoreData) {
+          const response = await fetch(`http://127.0.0.1:12345/getVehiclesHistory?No=${vehicleNo}&Page=${currentPage}`);
+          if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+          const pageData: VehicleHistory[] = await response.json();
+          
+          // 将当前页数据添加到总数据中
+          allData = [...allData, ...pageData];
+          
+          // 如果当前页数据少于5条，说明已经是最后一页
+          if (pageData.length < 5) {
+            hasMoreData = false;
+          } else {
+            currentPage++;
+          }
+        }
         
         // 设置当前页码
         this.currentPage = page;
-        
-        // 计算总页数（假设每页5条记录）
-        this.totalHistoryPages = Math.ceil(data.length / 5);
+        this.totalHistoryPages = currentPage;
         
         // 更新历史记录
-        this.historyRecords = data;
-        return data;
+        this.historyRecords = allData;
+        return allData;
       } catch (error) {
         console.error('获取车辆历史信息失败:', error);
         // 如果API失败，可以尝试使用本地mock数据
@@ -250,6 +303,46 @@ export const useTrafficStore = defineStore('traffic', {
         // 如果API失败，可以尝试使用本地mock数据
         this.statistics[`vehicle-${vehicleNo}`] = 612.1;
         return 612.1;
+      }
+    },
+
+    // 按日期范围获取历史记录
+    async fetchHistoryByDateRange(startDate: string, endDate: string) {
+      try {
+        // 由于后端没有提供按日期范围查询历史记录的API，我们需要先获取所有记录然后在前端过滤
+        // 为了演示目的，我们在这里模拟一个请求，如果后端提供了API则替换下面的逻辑
+        console.log(`按日期范围查询: ${startDate} 到 ${endDate}`);
+        
+        // 临时使用mock数据进行演示，实际应用中应该调用后端API
+        // 如果后端提供了相应的API，可以替换为实际的API调用
+        // const response = await fetch(`http://127.0.0.1:12345/getHistoryByDateRange?StartDate=${startDate}&EndDate=${endDate}`);
+        // if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+        // const data = await response.json();
+        
+        // 从utils导入formatDate函数
+        const { formatDate } = await import('@/utils');
+        
+        // 将输入的时间字符串转换为Date对象
+        const start = new Date(startDate);
+        const end = new Date(endDate);
+        
+        // 过滤现有的历史记录
+        const filteredRecords = this.historyRecords.filter(record => {
+          // 将时间字符串转换为Date对象进行比较
+          // 首先使用formatDate转换时间，然后创建Date对象
+          const formattedTime = formatDate(record.EnterTime);
+          const recordDate = new Date(formattedTime);
+          
+          return recordDate >= start && recordDate <= end;
+        });
+        
+        // 更新历史记录为过滤后的结果
+        this.historyRecords = filteredRecords;
+        return filteredRecords;
+      } catch (error) {
+        console.error('按日期范围获取历史记录失败:', error);
+        // 如果API失败，返回现有的历史记录
+        return this.historyRecords;
       }
     },
 
@@ -673,6 +766,435 @@ export const useTrafficStore = defineStore('traffic', {
     // 清除选择
     clearSelection() {
       this.selectedVehicle = null;
+    },
+    
+    // 获取车辆轨迹用于回放
+    async getVehiclePathForPlayback(vehicleNo: string) {
+      try {
+        // 首先获取车辆历史记录
+        await this.fetchVehiclesHistory(vehicleNo, 1);
+        
+        // 从历史记录中提取车辆的轨迹信息
+        const records = this.historyRecords.filter(record => record.VehicleNo === vehicleNo);
+        
+        if (records.length === 0) {
+          // 如果历史记录为空，尝试获取车辆实时位置作为轨迹点
+          await this.fetchVehiclePositions();
+          const currentVehicle = this.vehicles.find(v => v.No === vehicleNo);
+          if (currentVehicle && (currentVehicle.Position.Pos_X !== 0 || currentVehicle.Position.Pos_Y !== 0)) {
+            return [{
+              id: `${vehicleNo}-current`,
+              vehicleNo: vehicleNo,
+              time: new Date().toISOString(),
+              position: currentVehicle.Position,
+              speed: 0,
+              enterName: '当前位置',
+              exitName: ''
+            }];
+          }
+          return [];
+        }
+        
+        // 创建轨迹，根据出入口是否一致来决定路径
+        const pathData = [];
+        const maxPoints = 10; // 总共最多10个轨迹点
+        
+        // 只使用第一条历史记录
+        if (records.length > 0) {
+          const record = records[0];
+          
+          if (!record) return [];
+          
+          const enterName = record.EnterName || '未知入口';
+          const exitName = record.ExitName || enterName;
+          
+          let realPath;
+          if (enterName === exitName) {
+            // 出入口一致，环绕一周路径
+            realPath = this.createCircularPath(enterName);
+          } else {
+            // 出入口不一致，选择最短路径
+            realPath = this.buildRealisticPath(enterName, exitName);
+          }
+          
+          const stepSize = Math.max(1, Math.ceil(realPath.length / maxPoints));
+          
+          // 为路径中的每个点添加时间戳和速度信息
+          for (let j = 0; j < realPath.length; j += stepSize) {
+            if (realPath[j]) { // 确保路径点存在
+              pathData.push({
+                id: `${record.VehicleNo}-path-0-${j}`,
+                vehicleNo: record.VehicleNo || vehicleNo,
+                time: record.EnterTime || new Date().toISOString(),
+                position: {
+                  Pos_X: realPath[j]?.x ?? 0,
+                  Pos_Y: realPath[j]?.y ?? 0
+                },
+                speed: record.Speed || 0,
+                enterName: enterName,
+                exitName: exitName
+              });
+              
+              // 检查是否已达到最大点数
+              if (pathData.length >= maxPoints) {
+                break;
+              }
+            }
+          }
+        }
+        
+        return pathData;
+      } catch (error) {
+        console.error('获取车辆轨迹失败:', error);
+        return [];
+      }
+    },
+    
+    // 构建最短路径 - 使用Dijkstra算法
+    buildRealisticPath(startLocation: string, endLocation: string) {
+      // 定义所有节点及其坐标（根据地图布局）
+      const nodes: Record<string, {x: number, y: number}> = {
+        '西出入口': {x: 0, y: 400},
+        '东出入口': {x: 800, y: 200},
+        '南出入口': {x: 200, y: 0},
+        '北出入口': {x: 400, y: 600},
+        '检查站 1': {x: 300, y: 500},
+        '检查站 2': {x: 500, y: 500},
+        '检查站 3': {x: 200, y: 300},
+        '检查站 4': {x: 600, y: 300},
+        '检查站 5': {x: 300, y: 100},
+        '检查站 6': {x: 600, y: 100},
+        '中间点-左中上': {x: 200, y: 500},
+        '中间点-左中': {x: 200, y: 400},
+        '中间点-左下': {x: 200, y: 100},
+        '中间点-右中上': {x: 600, y: 500},
+        '中间点-右中': {x: 600, y: 200},
+        '中间点-中下': {x: 400, y: 100},
+        '中间点-顶部': {x: 400, y: 500}
+      };
+      
+      // 如果起点和终点相同，返回单个点
+      if (startLocation === endLocation) {
+        const pos = nodes[startLocation] || {x: 0, y: 0};
+        return [{x: pos.x, y: pos.y}];
+      }
+      
+      // 道路网络 - 定义节点之间的连接关系（根据MapCanvas.vue中的实际道路网络定义）
+      const roadNetwork: Record<string, string[]> = {
+        // 双向连接
+        '西出入口': ['中间点-左中'],      // 西出入口 ↔ 中间点-左中
+        '中间点-左中': ['西出入口'],
+        
+        // 从检查站 1 开始的路径
+        '检查站 1': ['中间点-左中上', '检查站 3'],  // 检查站 1 → 中间点-左中上, 检查站 3
+        '中间点-左中上': ['中间点-左中'],           // 中间点-左中上 → 中间点-左中
+        
+        // 左侧垂直路径
+        '中间点-左中': ['检查站 3'],               // 中间点-左中 → 检查站 3
+        '检查站 3': ['中间点-左下'],               // 检查站 3 → 中间点-左下
+        
+        // 底部水平路径
+        '中间点-左下': ['检查站 5'],               // 中间点-左下 → 检查站 5
+        '检查站 5': ['中间点-中下'],               // 检查站 5 → 中间点-中下
+        '中间点-中下': ['检查站 6'],               // 中间点-中下 → 检查站 6
+        
+        // 右侧路径
+        '检查站 6': ['中间点-右中'],               // 检查站 6 → 中间点-右中
+        '中间点-右中': ['检查站 4'],               // 中间点-右中 → 检查站 4
+        '检查站 4': ['中间点-右中上'],             // 检查站 4 → 中间点-右中上
+        '中间点-右中上': ['检查站 2'],             // 中间点-右中上 → 检查站 2
+        '检查站 2': ['检查站 1'],                 // 检查站 2 → 检查站 1
+        
+        // 顶部路径
+        '北出入口': ['检查站 1'],                 // 北出入口 → 检查站 1
+        '检查站 1': ['北出入口'],                 // 检查站 1 → 北出入口 (双向)
+        
+        // 出入口连接
+        '南出入口': ['中间点-左下'],               // 南出入口 → 中间点-左下
+        '东出入口': ['中间点-右中'],               // 东出入口 → 中间点-右中
+      };
+      
+      // Dijkstra算法找最短路径
+      const shortestPath = this.dijkstra(roadNetwork, nodes, startLocation, endLocation);
+      
+      if (shortestPath.length === 0) {
+        // 如果找不到路径，使用直线连接作为备用
+        const startPos = nodes[startLocation] || {x: 0, y: 0};
+        const endPos = nodes[endLocation] || {x: 0, y: 0};
+        return this.createStraightPath(startPos, endPos);
+      }
+      
+      // 将路径节点转换为连续的坐标点（添加中间插值点）
+      return this.interpolatePath(shortestPath, nodes);
+    },
+    
+    // Dijkstra算法实现
+    dijkstra(network: Record<string, string[]>, nodes: Record<string, {x: number, y: number}>, start: string, end: string): string[] {
+      // 距离映射
+      const distances: Record<string, number> = {};
+      // 前驱节点映射
+      const previous: Record<string, string | null> = {};
+      // 未访问节点集合
+      const unvisited = new Set<string>();
+      
+      // 初始化
+      for (const node of Object.keys(nodes)) {
+        distances[node] = node === start ? 0 : Infinity;
+        previous[node] = null;
+        unvisited.add(node);
+      }
+      
+      while (unvisited.size > 0) {
+        // 找到距离最小的未访问节点
+        let current = '';
+        let minDist = Infinity;
+        for (const node of unvisited) {
+          const dist = distances[node];
+          if (dist !== undefined && dist < minDist) {
+            minDist = dist;
+            current = node;
+          }
+        }
+        
+        if (!current || distances[current] === Infinity) break;
+        
+        // 如果到达终点，退出循环
+        if (current === end) break;
+        
+        unvisited.delete(current);
+        
+        // 更新邻居节点的距离
+        const neighbors = network[current] || [];
+        for (const neighbor of neighbors) {
+          if (!unvisited.has(neighbor)) continue;
+          
+          const currentPos = nodes[current];
+          const neighborPos = nodes[neighbor];
+          
+          if (!currentPos || !neighborPos) continue;
+          
+          const distance = this.calculateDistance(currentPos, neighborPos);
+          const currentDist = distances[current];
+          if (currentDist === undefined) continue;
+          
+          const newDist = currentDist + distance;
+          const neighborDist = distances[neighbor];
+          if (neighborDist === undefined || newDist < neighborDist) {
+            distances[neighbor] = newDist;
+            previous[neighbor] = current;
+          }
+        }
+      }
+      
+      // 回溯路径
+      const path: string[] = [];
+      let current = end;
+      while (current && previous[current] !== null) {
+        path.unshift(current);
+        const prev = previous[current];
+        if (prev === null || prev === undefined) break;
+        current = prev;
+      }
+      
+      if (path.length > 0 && start) {
+        path.unshift(start);
+      } else if (start === end && start) {
+        path.push(start);
+      }
+      
+      return path;
+    },
+    
+    // 计算两点之间的距离
+    calculateDistance(pos1: {x: number, y: number}, pos2: {x: number, y: number}): number {
+      const dx = pos2.x - pos1.x;
+      const dy = pos2.y - pos1.y;
+      return Math.sqrt(dx * dx + dy * dy);
+    },
+    
+    // 创建直线路径（备用）
+    createStraightPath(start: {x: number, y: number}, end: {x: number, y: number}): {x: number, y: number}[] {
+      const path: {x: number, y: number}[] = [];
+      const numPoints = 10;
+      for (let i = 0; i <= numPoints; i++) {
+        const t = i / numPoints;
+        path.push({
+          x: start.x + (end.x - start.x) * t,
+          y: start.y + (end.y - start.y) * t
+        });
+      }
+      return path;
+    },
+    
+    // 在路径节点之间插入插值点，使路径更平滑
+    interpolatePath(nodePath: string[], nodes: Record<string, {x: number, y: number}>): {x: number, y: number}[] {
+      const path: {x: number, y: number}[] = [];
+      
+      for (let i = 0; i < nodePath.length - 1; i++) {
+        const currentNodeKey = nodePath[i];
+        const nextNodeKey = nodePath[i + 1];
+        
+        if (!currentNodeKey || !nextNodeKey) continue;
+        
+        const currentNode = nodes[currentNodeKey];
+        const nextNode = nodes[nextNodeKey];
+        
+        if (!currentNode || !nextNode) continue;
+        
+        // 计算两点之间需要插入的点数（根据距离决定）
+        const distance = this.calculateDistance(currentNode, nextNode);
+        const numPoints = Math.max(3, Math.ceil(distance / 50));
+        
+        for (let j = 0; j < numPoints; j++) {
+          const t = j / (numPoints - 1);
+          path.push({
+            x: currentNode.x + (nextNode.x - currentNode.x) * t,
+            y: currentNode.y + (nextNode.y - currentNode.y) * t
+          });
+        }
+      }
+      
+      // 添加最后一个节点
+      if (nodePath.length > 0) {
+        const lastNodeKey = nodePath[nodePath.length - 1];
+        if (lastNodeKey) {
+          const lastNode = nodes[lastNodeKey];
+          if (lastNode) {
+            path.push({x: lastNode.x, y: lastNode.y});
+          }
+        }
+      }
+      
+      return path;
+    },
+    
+    // 创建环绕路径（当出入口一致时使用）
+    createCircularPath(locationName: string): {x: number, y: number}[] {
+      // 定义所有节点及其坐标（根据地图布局）
+      const nodes: Record<string, {x: number, y: number}> = {
+        '西出入口': {x: 0, y: 400},
+        '东出入口': {x: 800, y: 200},
+        '南出入口': {x: 200, y: 0},
+        '北出入口': {x: 400, y: 600},
+        '检查站 1': {x: 300, y: 500},
+        '检查站 2': {x: 500, y: 500},
+        '检查站 3': {x: 200, y: 300},
+        '检查站 4': {x: 600, y: 300},
+        '检查站 5': {x: 300, y: 100},
+        '检查站 6': {x: 600, y: 100},
+        '中间点-左中上': {x: 200, y: 500},
+        '中间点-左中': {x: 200, y: 400},
+        '中间点-左下': {x: 200, y: 100},
+        '中间点-右中上': {x: 600, y: 500},
+        '中间点-右中': {x: 600, y: 200},
+        '中间点-中下': {x: 400, y: 100},
+        '中间点-顶部': {x: 400, y: 500}
+      };
+      
+      // 根据起始点定义一个合理的环绕路径
+      // 从任意出入口出发，环绕整个地图一圈后回到起点
+      let circularRoute: string[];
+      
+      switch(locationName) {
+        case '西出入口':
+          circularRoute = [
+            '西出入口', '中间点-左中', '检查站 3', '南出入口', 
+            '检查站 3', '检查站 5', '中间点-中下', '检查站 6', 
+            '中间点-右中', '检查站 4', '东出入口', '检查站 4', 
+            '中间点-右中上', '检查站 2', '检查站 1', '中间点-顶部', 
+            '北出入口', '中间点-顶部', '检查站 1', '中间点-左中上', 
+            '中间点-左中', '西出入口'
+          ];
+          break;
+        case '东出入口':
+          circularRoute = [
+            '东出入口', '检查站 4', '中间点-右中', '检查站 6', 
+            '中间点-中下', '检查站 5', '检查站 3', '南出入口', 
+            '检查站 3', '中间点-左中', '西出入口', '中间点-左中', 
+            '中间点-左中上', '检查站 1', '中间点-顶部', '北出入口', 
+            '中间点-顶部', '检查站 1', '检查站 2', '中间点-右中上', 
+            '检查站 4', '东出入口'
+          ];
+          break;
+        case '南出入口':
+          circularRoute = [
+            '南出入口', '检查站 3', '中间点-左中', '西出入口', 
+            '中间点-左中', '中间点-左中上', '检查站 1', '中间点-顶部', 
+            '北出入口', '中间点-顶部', '检查站 1', '检查站 2', 
+            '中间点-右中上', '检查站 4', '东出入口', '检查站 4', 
+            '中间点-右中', '检查站 6', '中间点-中下', '检查站 5', 
+            '检查站 3', '南出入口'
+          ];
+          break;
+        case '北出入口':
+          circularRoute = [
+            '北出入口', '中间点-顶部', '检查站 1', '中间点-左中上', 
+            '中间点-左中', '西出入口', '中间点-左中', '检查站 3', 
+            '南出入口', '检查站 3', '检查站 5', '中间点-中下', 
+            '检查站 6', '中间点-右中', '检查站 4', '东出入口', 
+            '检查站 4', '中间点-右中上', '检查站 2', '检查站 1', 
+            '中间点-顶部', '北出入口'
+          ];
+          break;
+        default:
+          // 对于检查站或其他点，定义一个经过主要出入口的路径
+          circularRoute = [
+            locationName, '检查站 1', '中间点-左中上', '中间点-左中', 
+            '西出入口', '中间点-左中', '检查站 3', '南出入口', 
+            '检查站 3', '检查站 5', '中间点-中下', '检查站 6', 
+            '中间点-右中', '检查站 4', '东出入口', '检查站 4', 
+            '中间点-右中上', '检查站 2', '检查站 1', 
+            locationName
+          ];
+          break;
+      }
+      
+      // 移除连续重复的节点
+      const uniqueRoute = circularRoute.filter((node, index) => 
+        index === 0 || node !== circularRoute[index - 1]
+      );
+      
+      // 转换路径节点为坐标点
+      const path: {x: number, y: number}[] = [];
+      for (const nodeName of uniqueRoute) {
+        const node = nodes[nodeName];
+        if (node) {
+          path.push({x: node.x, y: node.y});
+        }
+      }
+      
+      return path;
+    },
+    
+    // 根据位置名称获取坐标
+    getCoordinatesForLocation(locationName: string) {
+      // 预定义的位置坐标
+      const locationCoords: Record<string, { Pos_X: number, Pos_Y: number }> = {
+        '西出入口': { Pos_X: 0, Pos_Y: 400 },
+        '东出入口': { Pos_X: 800, Pos_Y: 200 },
+        '南出入口': { Pos_X: 200, Pos_Y: 0 },
+        '北出入口': { Pos_X: 400, Pos_Y: 600 },
+        '检查站 1': { Pos_X: 300, Pos_Y: 500 },
+        '检查站 2': { Pos_X: 500, Pos_Y: 500 },
+        '检查站 3': { Pos_X: 200, Pos_Y: 300 },
+        '检查站 4': { Pos_X: 600, Pos_Y: 300 },
+        '检查站 5': { Pos_X: 300, Pos_Y: 100 },
+        '检查站 6': { Pos_X: 600, Pos_Y: 100 },
+        // 添加更多可能的地点
+        '中间点-左上': { Pos_X: 200, Pos_Y: 400 },
+        '中间点-左中上': { Pos_X: 200, Pos_Y: 500 },
+        '中间点-左下': { Pos_X: 200, Pos_Y: 100 },
+        '中间点-右下': { Pos_X: 600, Pos_Y: 200 },
+        '中间点-底部中间': { Pos_X: 400, Pos_Y: 100 },
+        '中间点-底部中间右': { Pos_X: 500, Pos_Y: 100 }
+      };
+      
+      return locationCoords[locationName] || { Pos_X: 0, Pos_Y: 0 };
+    },
+    
+    // 设置要在地图上显示的车辆路径
+    setVehiclePathToDisplay(pathData: any[]) {
+      this.vehiclePathToDisplay = pathData;
     }
   }
 });

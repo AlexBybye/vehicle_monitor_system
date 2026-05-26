@@ -6,20 +6,35 @@
       :height="canvasHeight"
       class="map-canvas"
       @click="handleCanvasClick"
-      @mousemove="handleMouseMove"
-      @mouseleave="handleMouseLeave"
+
     />
-    <!-- 车辆信息悬浮窗 -->
-    <div 
-      v-if="hoveredVehicle" 
-      class="tooltip" 
-      :style="{ top: tooltipY + 'px', left: tooltipX + 'px' }"
-    >
-      <div><strong>{{ hoveredVehicle.No }}</strong></div>
-      <div>位置: ({{ hoveredVehicle.Position.Pos_X }}, {{ hoveredVehicle.Position.Pos_Y }})</div>
-      <div v-if="vehicleDetails && vehicleDetails[hoveredVehicle.No]">
-        速度: {{ vehicleDetails[hoveredVehicle.No]?.Speed }} km/h
+
+    
+    <!-- 选中车辆信息面板 -->
+    <div v-if="selectedVehicleInfo" class="vehicle-info-panel">
+      <h3>车辆详细信息</h3>
+      <div class="info-item">
+        <span class="label">车牌号:</span>
+        <span class="value">{{ selectedVehicleInfo.No }}</span>
       </div>
+      <div class="info-item">
+        <span class="label">位置:</span>
+        <span class="value">({{ selectedVehicleInfo.Position.Pos_X }}, {{ selectedVehicleInfo.Position.Pos_Y }})</span>
+      </div>
+      <div class="info-item" v-if="vehicleDetails && vehicleDetails[selectedVehicleInfo.No]">
+        <span class="label">瞬时车速:</span>
+        <span class="value">{{ vehicleDetails[selectedVehicleInfo.No]?.Speed }} km/h</span>
+      </div>
+      <div class="info-item" v-if="vehicleDetails && vehicleDetails[selectedVehicleInfo.No] && vehicleDetails[selectedVehicleInfo.No]?.EnterTime">
+        <span class="label">进入时间:</span>
+        <span class="value">{{ vehicleDetails[selectedVehicleInfo.No]?.EnterTime ? formatDate(vehicleDetails[selectedVehicleInfo.No]?.EnterTime!) : 'N/A' }}</span>
+      </div>
+      <div class="info-item" v-if="vehicleDetails && vehicleDetails[selectedVehicleInfo.No]">
+        <span class="label">入口:</span>
+        <span class="value">{{ vehicleDetails[selectedVehicleInfo.No]?.EnterName }} ({{ vehicleDetails[selectedVehicleInfo.No]?.EnterNo }})</span>
+      </div>
+
+      <button class="close-btn" @click="closeVehicleInfo">×</button>
     </div>
   </div>
 </template>
@@ -28,6 +43,7 @@
 import { ref, onMounted, onUnmounted, computed, nextTick, watch } from 'vue';
 import { storeToRefs } from 'pinia';
 import { useTrafficStore } from '@/store/trafficStore';
+import { formatDate } from '@/utils';
 import type { VehiclePosition, Entry, Checkpoint } from '@/types';
 
 // 定义props
@@ -47,10 +63,35 @@ const props = withDefaults(defineProps<Props>(), {
 const canvasRef = ref<HTMLCanvasElement | null>(null);
 const containerRef = ref<HTMLDivElement | null>(null);
 
-// 悬浮车辆信息
-const hoveredVehicle = ref<VehiclePosition | null>(null);
-const tooltipX = ref(0);
-const tooltipY = ref(0);
+
+
+// 选中车辆信息（结合位置信息和详细信息）
+const selectedVehicleInfo = computed(() => {
+  if (store.selectedVehicle) {
+    const basicInfo = vehicles.value.find(v => v.No === store.selectedVehicle);
+    const detailedInfo = vehicleDetails.value[store.selectedVehicle];
+    
+    console.log('Basic info:', basicInfo);
+    console.log('Detailed info:', detailedInfo);
+    console.log('Vehicle details object:', vehicleDetails.value);
+    
+    // 无论是否有详细信息，我们都返回基础信息，并添加详细信息（如果有）
+    if (basicInfo && detailedInfo) {
+      // 合并基础信息和详细信息，详细信息覆盖基础信息中的相同字段
+      return {
+        ...basicInfo,
+        ...detailedInfo
+      };
+    } else if (basicInfo) {
+      // 只有基础信息
+      return basicInfo;
+    } else if (detailedInfo) {
+      // 只有详细信息
+      return detailedInfo;
+    }
+  }
+  return null;
+});
 
 // 图片资源
 const entryImage = new Image();
@@ -156,13 +197,19 @@ const handleCanvasClick = (event: MouseEvent) => {
   const y = (event.clientY - rect.top - offsetY) / scaleY;
   
   // 检查是否点击了某个车辆
+  // 使用更精确的检测方法，考虑车辆在画布上的实际渲染大小
   const clickedVehicle = activeVehicles.value.find(vehicle => {
-    // 对于图片，我们需要更大的点击半径
+    // 转换车辆坐标到画布坐标系
+    const vehicleConverted = convertCoord(vehicle.Position.Pos_X, vehicle.Position.Pos_Y);
+    
+    // 计算鼠标点击点与车辆中心的距离
     const distance = Math.sqrt(
-      Math.pow(vehicle.Position.Pos_X - x, 2) + 
-      Math.pow(vehicle.Position.Pos_Y - y, 2)
+      Math.pow(vehicleConverted.x - x, 2) + 
+      Math.pow(vehicleConverted.y - y, 2)
     );
-    return distance < 20; // 20像素范围内的点击视为有效点击
+    
+    // 增大点击检测半径，提高易用性
+    return distance < 40; // 增大到40像素范围内的点击视为有效点击，考虑图片大小
   });
   
   if (clickedVehicle) {
@@ -174,38 +221,99 @@ const handleCanvasClick = (event: MouseEvent) => {
   }
 };
 
-const handleMouseMove = (event: MouseEvent) => {
-  if (!canvasRef.value || !containerRef.value) return;
-  
-  const rect = containerRef.value.getBoundingClientRect();
-  const { scaleX, scaleY, offsetX, offsetY } = getCanvasDisplayInfo();
-  
-  // 计算相对于 canvas 逻辑坐标系的坐标
-  const x = (event.clientX - rect.left - offsetX) / scaleX;
-  const y = (event.clientY - rect.top - offsetY) / scaleY;
-  
-  // 查找鼠标悬停的车辆
-  const vehicle = activeVehicles.value.find(v => {
-    // 对于图片，我们需要更大的悬停半径
-    const distance = Math.sqrt(
-      Math.pow(v.Position.Pos_X - x, 2) + 
-      Math.pow(v.Position.Pos_Y - y, 2)
-    );
-    return distance < 20; // 20像素范围内
-  });
-  
-  if (vehicle) {
-    hoveredVehicle.value = vehicle;
-    tooltipX.value = event.pageX;
-    tooltipY.value = event.pageY;
-  } else {
-    hoveredVehicle.value = null;
-  }
+// 关闭车辆信息面板
+const closeVehicleInfo = () => {
+  store.clearSelection();
 };
 
-const handleMouseLeave = () => {
-  hoveredVehicle.value = null;
-};
+// 当前选中车辆的定时更新ID
+const vehicleDetailUpdateInterval = ref<number | null>(null);
+
+// 监听选中车辆变化，获取详细信息
+watch(() => store.selectedVehicle, async (newVal) => {
+  // 清除之前的选择的车辆的定时更新
+  if (vehicleDetailUpdateInterval.value) {
+    clearInterval(vehicleDetailUpdateInterval.value);
+    vehicleDetailUpdateInterval.value = null;
+  }
+
+  if (newVal) {
+    console.log('Fetching vehicle detail for:', newVal);
+    try {
+      const detail = await store.fetchVehicleDetail(newVal);
+      console.log('Fetch result:', detail);
+      console.log('Vehicle details after fetch:', store.vehicleDetails[newVal]);
+
+      // 获取车辆路径并更新到store
+      try {
+        const pathData = await store.getVehiclePathForPlayback(newVal);
+        store.setVehiclePathToDisplay(pathData);
+        console.log('Vehicle path updated:', pathData);
+      } catch (pathError) {
+        console.error('Error getting vehicle path:', pathError);
+      }
+
+      // 设置定时更新，每隔1秒更新一次选中车辆的详细信息
+      vehicleDetailUpdateInterval.value = setInterval(async () => {
+        if (store.selectedVehicle) {
+          console.log('Updating vehicle detail for:', store.selectedVehicle);
+          try {
+            const updatedDetail = await store.fetchVehicleDetail(store.selectedVehicle);
+            
+            // 检查车辆是否已离开区域（位置为(0,0)），如果是则清除选中状态
+            if (updatedDetail && updatedDetail.Position && 
+                updatedDetail.Position.Pos_X === 0 && updatedDetail.Position.Pos_Y === 0) {
+              console.log('Vehicle has left the area, clearing selection');
+              store.clearSelection();
+            } else {
+              console.log('Updated vehicle detail:', updatedDetail);
+              
+              // 更新车辆路径（如果需要）
+              try {
+                const pathData = await store.getVehiclePathForPlayback(store.selectedVehicle);
+                store.setVehiclePathToDisplay(pathData);
+              } catch (pathError) {
+                console.error('Error updating vehicle path:', pathError);
+              }
+            }
+          } catch (error) {
+            console.error('Error updating vehicle detail:', error);
+          }
+        } else {
+          // 如果没有选中车辆，清除定时器
+          if (vehicleDetailUpdateInterval.value) {
+            clearInterval(vehicleDetailUpdateInterval.value);
+            vehicleDetailUpdateInterval.value = null;
+          }
+        }
+      }, 1000); // 每1秒更新一次
+    } catch (error) {
+      console.error('Error fetching vehicle detail:', error);
+    }
+  } else {
+    // 当取消选择车辆时，清除相关信息和定时器
+    console.log('Clearing vehicle selection');
+    // 清除车辆路径显示
+    store.setVehiclePathToDisplay([]);
+    if (vehicleDetailUpdateInterval.value) {
+      clearInterval(vehicleDetailUpdateInterval.value);
+      vehicleDetailUpdateInterval.value = null;
+    }
+  }
+});
+
+// 组件卸载时清除定时器
+onUnmounted(() => {
+  if (vehicleDetailUpdateInterval.value) {
+    clearInterval(vehicleDetailUpdateInterval.value);
+    vehicleDetailUpdateInterval.value = null;
+  }
+  window.removeEventListener('resize', handleResize);
+});
+
+
+
+
 
 // 计算车辆的角度（用于旋转）
 const calculateVehicleAngle = (vehicle: VehiclePosition): number => {
@@ -268,8 +376,11 @@ const drawMap = () => {
   // 绘制检查点
   drawCheckpoints(ctx);
   
-  // 绘制路径连接线
-  drawPaths(ctx);
+  // 绘制路径连接线 - 注释掉此函数，因为道路网络已在drawRoadNetwork中定义
+  // drawPaths(ctx);
+  
+  // 绘制车辆路径（如果有的话）
+  drawVehiclePath(ctx);
   
   // 绘制车辆
   drawVehicles(ctx);
@@ -484,36 +595,118 @@ const drawPathCongestion = (ctx: CanvasRenderingContext2D) => {
   }
 };
 
-// 绘制路径连接线
-const drawPaths = (ctx: CanvasRenderingContext2D) => {
-  ctx.strokeStyle = '#9E9E9E';
-  ctx.lineWidth = 2;
+// 绘制路径连接线 - 已禁用，因为道路网络已在drawRoadNetwork中精确定义
+// const drawPaths = (ctx: CanvasRenderingContext2D) => {
+//   ctx.strokeStyle = '#9E9E9E';
+//   ctx.lineWidth = 2;
+//   
+//   // 连接出入口和检查点
+//   [...entries.value, ...checkpoints.value].forEach(location => {
+//     // 转换坐标
+//     const startConverted = convertCoord(location.Start.Pos_X, location.Start.Pos_Y);
+//     const posConverted = convertCoord(location.Position.Pos_X, location.Position.Pos_Y);
+//     const endConverted = convertCoord(location.End.Pos_X, location.End.Pos_Y);
+//     
+//     // 绘制起始到当前位置的路径
+//     if (location.Start.Pos_X !== location.Position.Pos_X || 
+//         location.Start.Pos_Y !== location.Position.Pos_Y) {
+//       ctx.beginPath();
+//       ctx.moveTo(startConverted.x, startConverted.y);
+//       ctx.lineTo(posConverted.x, posConverted.y);
+//       ctx.stroke();
+//     }
+//     
+//     // 绘制当前位置到结束位置的路径
+//     if (location.End.Pos_X !== location.Position.Pos_X || 
+//         location.End.Pos_Y !== location.Position.Pos_Y) {
+//       ctx.beginPath();
+//       ctx.moveTo(posConverted.x, posConverted.y);
+//       ctx.lineTo(endConverted.x, endConverted.y);
+//       ctx.stroke();
+//     }
+//   });
+// };
+
+// 绘制车辆路径
+const drawVehiclePath = (ctx: CanvasRenderingContext2D) => {
+  const pathData = store.vehiclePathToDisplay;
+  if (!pathData || pathData.length === 0) return;
+
+  // 设置路径样式
+  ctx.strokeStyle = '#FF4136'; // 红色路径 (更鲜艳的颜色)
+  ctx.lineWidth = 4;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  ctx.shadowColor = 'rgba(255, 65, 54, 0.5)';
+  ctx.shadowBlur = 10;
   
-  // 连接出入口和检查点
-  [...entries.value, ...checkpoints.value].forEach(location => {
-    // 转换坐标
-    const startConverted = convertCoord(location.Start.Pos_X, location.Start.Pos_Y);
-    const posConverted = convertCoord(location.Position.Pos_X, location.Position.Pos_Y);
-    const endConverted = convertCoord(location.End.Pos_X, location.End.Pos_Y);
+  // 开始绘制路径
+  ctx.beginPath();
+  
+  // 遍历路径点并绘制线条
+  for (let i = 0; i < pathData.length; i++) {
+    const point = pathData[i];
+    const convertedPos = convertCoord(point.position.Pos_X, point.position.Pos_Y);
     
-    // 绘制起始到当前位置的路径
-    if (location.Start.Pos_X !== location.Position.Pos_X || 
-        location.Start.Pos_Y !== location.Position.Pos_Y) {
-      ctx.beginPath();
-      ctx.moveTo(startConverted.x, startConverted.y);
-      ctx.lineTo(posConverted.x, posConverted.y);
-      ctx.stroke();
+    if (i === 0) {
+      // 移动到第一个点
+      ctx.moveTo(convertedPos.x, convertedPos.y);
+    } else {
+      // 连接到下一个点
+      ctx.lineTo(convertedPos.x, convertedPos.y);
     }
+  }
+  
+  // 绘制路径
+  ctx.stroke();
+  
+  // 清除阴影效果
+  ctx.shadowColor = 'transparent';
+  ctx.shadowBlur = 0;
+  
+  // 绘制轨迹点（更密集的点）
+  for (let i = 0; i < pathData.length; i += Math.max(1, Math.floor(pathData.length / 20))) { // 每20个点绘制一个轨迹点
+    const point = pathData[i];
+    const convertedPos = convertCoord(point.position.Pos_X, point.position.Pos_Y);
     
-    // 绘制当前位置到结束位置的路径
-    if (location.End.Pos_X !== location.Position.Pos_X || 
-        location.End.Pos_Y !== location.Position.Pos_Y) {
-      ctx.beginPath();
-      ctx.moveTo(posConverted.x, posConverted.y);
-      ctx.lineTo(endConverted.x, endConverted.y);
-      ctx.stroke();
-    }
-  });
+    // 绘制轨迹点
+    ctx.fillStyle = '#0074D9'; // 蓝色轨迹点
+    ctx.beginPath();
+    ctx.arc(convertedPos.x, convertedPos.y, 3, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  
+  // 绘制起点和终点标记
+  if (pathData.length > 0) {
+    // 起点（绿色圆圈）
+    const startPoint = pathData[0];
+    const startConverted = convertCoord(startPoint.position.Pos_X, startPoint.position.Pos_Y);
+    ctx.fillStyle = '#2ECC40'; // 绿色
+    ctx.strokeStyle = '#FFFFFF';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(startConverted.x, startConverted.y, 8, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+    
+    // 终点（红色圆圈）
+    const endPoint = pathData[pathData.length - 1];
+    const endConverted = convertCoord(endPoint.position.Pos_X, endPoint.position.Pos_Y);
+    ctx.fillStyle = '#FF4136'; // 红色
+    ctx.strokeStyle = '#FFFFFF';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(endConverted.x, endConverted.y, 8, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+    
+    // 添加起点和终点的文字标识
+    ctx.fillStyle = '#000000';
+    ctx.font = 'bold 12px Arial';
+    ctx.textAlign = 'center';
+    ctx.fillText('起点', startConverted.x, startConverted.y - 15);
+    ctx.fillText('终点', endConverted.x, endConverted.y - 15);
+  }
 };
 
 // 绘制车辆
@@ -614,7 +807,6 @@ onMounted(() => {
 // 清理
 onUnmounted(() => {
   window.removeEventListener('resize', handleResize);
-  hoveredVehicle.value = null;
 });
 </script>
 
@@ -627,7 +819,6 @@ onUnmounted(() => {
   height: 100%;
   overflow: hidden;
 }
-
 .map-canvas {
   display: block;
   width: 100%;
@@ -637,7 +828,6 @@ onUnmounted(() => {
   image-rendering: crisp-edges;
   image-rendering: pixelated;
 }
-
 .tooltip {
   position: fixed;
   background-color: rgba(0, 0, 0, 0.8);
@@ -648,5 +838,69 @@ onUnmounted(() => {
   pointer-events: none;
   z-index: 1000;
   min-width: 150px;
+}
+
+/* 车辆信息面板样式 */
+.vehicle-info-panel {
+  position: absolute;
+  top: 20px;
+  right: 20px;
+  width: 300px;
+  background-color: rgba(255, 255, 255, 0.95);
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  padding: 20px;
+  z-index: 100;
+  backdrop-filter: blur(10px);
+}
+
+.vehicle-info-panel h3 {
+  margin-top: 0;
+  margin-bottom: 15px;
+  color: #333;
+  border-bottom: 1px solid #eee;
+  padding-bottom: 10px;
+}
+
+.info-item {
+  display: flex;
+  margin-bottom: 10px;
+  flex-wrap: wrap;
+}
+
+.label {
+  font-weight: bold;
+  color: #555;
+  min-width: 80px;
+  margin-right: 10px;
+}
+
+.value {
+  color: #333;
+  flex: 1;
+}
+
+.close-btn {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  background: none;
+  border: none;
+  font-size: 20px;
+  cursor: pointer;
+  color: #999;
+  width: 30px;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  transition: background-color 0.2s;
+}
+
+.close-btn:hover {
+  background-color: #f0f0f0;
+  color: #333;
 }
 </style>
