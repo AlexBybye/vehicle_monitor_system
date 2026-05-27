@@ -624,103 +624,130 @@ export const useTrafficStore = defineStore('traffic', {
         '顶部中心点 -> 检查站1'
       ));
       
-      // 创建一个映射，将每对端点映射到它们之间的所有车辆
-      // 对于每对端点，我们只需要计算一次通过该路径的车辆数，而不是为每个方向分别计算
-      const pathPairVehicles: Record<string, number> = {};
-      
-      // 先找出所有唯一的端点对
-      const uniquePairs: Record<string, { start: any, end: any }> = {};
-      allPaths.forEach(path => {
-        const pathParts = path.id.substring(5).split('->'); // 移除 'path:' 前缀并分割
-        if (pathParts.length === 2) {
-          const pointA = pathParts[0];
-          const pointB = pathParts[1];
-          const pairKey = [pointA, pointB].sort().join('|'); // 排序以确保 AB 和 BA 得到相同的键
-          
-          // 只记录一次端点对的坐标信息
-          if (!uniquePairs[pairKey]) {
-            uniquePairs[pairKey] = { start: path.start, end: path.end };
-          }
-        }
-      });
-      
-      // 为每个唯一端点对计算车辆数量
-      Object.entries(uniquePairs).forEach(([pairKey, pathInfo]) => {
-        const vehiclesOnPath = this.vehicles.filter(vehicle => {
-          // 过滤掉位置为(0,0)的无效车辆
-          if (vehicle.Position.Pos_X === 0 && vehicle.Position.Pos_Y === 0) {
-            return false;
-          }
-          
-          // 使用点到线段的距离公式来判断车辆是否在路径附近
-           const distance = distanceFromPointToSegment(
-             vehicle.Position.Pos_X, 
-             vehicle.Position.Pos_Y,
-             pathInfo.start.Pos_X,
-             pathInfo.start.Pos_Y,
-             pathInfo.end.Pos_X,
-             pathInfo.end.Pos_Y
-           );
-          
-          return distance < 100; // 在路径100像素范围内认为在该路径上，增加容错范围
-        }).length;
-        
-        pathPairVehicles[pairKey] = vehiclesOnPath;
-      });
-      
-      // 现在为每条路径分配拥堵级别，同对端点的路径共享相同的拥堵级别
-      allPaths.forEach(path => {
-        const pathParts = path.id.substring(5).split('->');
-        if (pathParts.length === 2) {
-          const pointA = pathParts[0];
-          const pointB = pathParts[1];
-          const pairKey = [pointA, pointB].sort().join('|');
-          
-          const totalVehicles = pathPairVehicles[pairKey] || 0;
-          
-          // 设置拥堵等级 (0-3: 一级, 4-6: 二级, 7+: 三级) - 按照明确的需求标准
-          let level = 0;
-          if (totalVehicles >= 7) level = 3;  // 7辆及以上：三级拥堵（严重）
-          else if (totalVehicles >= 4&& totalVehicles < 7) level = 2;  // 4-6辆：二级拥堵（较严重）
-          else if (totalVehicles >= 0&& totalVehicles < 4) level = 1;  // 1-3辆：一级拥堵（轻微）
+      // 等级边界（共享给路径与检查点）：
+      //   0 辆 → 0 畅通；1-3 → 1 轻度；4-6 → 2 中度；≥7 → 3 重度
+      const levelOf = (count: number): number => {
+        if (count >= 7) return 3;
+        if (count >= 4) return 2;
+        if (count >= 1) return 1;
+        return 0;
+      };
 
-          
-          congestion[path.id] = {
-            id: path.id,
-            start: path.start,
-            end: path.end,
-            congestionLevel: level
+      // 用户可读的端点名称映射（id 中的 token → 中文）
+      const tokenToName: Record<string, string> = {
+        'W': '西出入口',
+        'E': '东出入口',
+        'S': '南出入口',
+        'N': '北出入口',
+        'C-1': '检查站1',
+        'C-2': '检查站2',
+        'C-3': '检查站3',
+        'C-4': '检查站4',
+        'C-5': '检查站5',
+        'C-6': '检查站6',
+        'mid-left-top': '左中点',
+        'mid-top-left-x': '左上中点',
+        'mid-left-bottom': '左下点',
+        'mid-right-bottom': '右中下点',
+        'mid-right-top': '右上中点',
+        'mid-top-center': '北门连接点',
+      };
+      const nameOf = (token: string) => tokenToName[token] || token;
+
+      // 把同一对端点的所有 segment 聚合，作为"一条主路径"统一计数与赋级
+      type Aggregate = {
+        pairKey: string;
+        startName: string;
+        endName: string;
+        firstStart: { Pos_X: number; Pos_Y: number };
+        lastEnd: { Pos_X: number; Pos_Y: number };
+        segments: PathInfo[];
+      };
+      const aggregates: Record<string, Aggregate> = {};
+      allPaths.forEach(path => {
+        const idBody = path.id.substring(5); // 去掉 'path:'
+        const parts = idBody.split('->');
+        if (parts.length !== 2) return;
+        const aRaw = (parts[0] || '').split('-seg')[0]!;
+        const bRaw = (parts[1] || '').split('-seg')[0]!;
+        const pairKey = [aRaw, bRaw].sort().join('|');
+        if (!aggregates[pairKey]) {
+          aggregates[pairKey] = {
+            pairKey,
+            startName: nameOf(aRaw),
+            endName: nameOf(bRaw),
+            firstStart: path.start,
+            lastEnd: path.end,
+            segments: [],
           };
         }
+        aggregates[pairKey]!.lastEnd = path.end;
+        aggregates[pairKey]!.segments.push(path);
       });
-      
-      // 同时也要为检查点本身计算拥挤程度
+
+      // 统计每对端点上的车辆数：车到任意一个 segment 的距离 < 30px 即算
+      Object.values(aggregates).forEach(agg => {
+        const count = this.vehicles.filter(vehicle => {
+          if (vehicle.Position.Pos_X === 0 && vehicle.Position.Pos_Y === 0) return false;
+          for (const seg of agg.segments) {
+            const d = distanceFromPointToSegment(
+              vehicle.Position.Pos_X, vehicle.Position.Pos_Y,
+              seg.start.Pos_X, seg.start.Pos_Y,
+              seg.end.Pos_X, seg.end.Pos_Y,
+            );
+            if (d < 30) return true;
+          }
+          return false;
+        }).length;
+
+        const level = levelOf(count);
+        const aggId = `path:${agg.pairKey}`;
+        const name = `${agg.startName} ↔ ${agg.endName}`;
+
+        // 主条目：用于拥堵列表与详情显示（一对端点一条记录）
+        congestion[aggId] = {
+          id: aggId,
+          name,
+          start: agg.firstStart,
+          end: agg.lastEnd,
+          congestionLevel: level,
+          vehicleCount: count,
+        };
+
+        // 渲染条目：地图画布按每个 segment 上色，避免直线"穿过"折点
+        agg.segments.forEach((seg, idx) => {
+          if (seg.id === aggId) return; // 不与主条目重复
+          congestion[`${aggId}#${idx}`] = {
+            id: `${aggId}#${idx}`,
+            name,
+            start: seg.start,
+            end: seg.end,
+            congestionLevel: level,
+            vehicleCount: count,
+          };
+        });
+      });
+
+      // 检查点拥堵
       this.checkpoints.forEach(checkpoint => {
         const checkpointId = `checkpoint-${checkpoint.No}`;
-        const vehiclesNearCheckpoint = this.vehicles.filter(vehicle => {
-          if (vehicle.Position.Pos_X === 0 && vehicle.Position.Pos_Y === 0) {
-            return false;
-          }
-          
-          const dx = Math.abs(vehicle.Position.Pos_X - checkpoint.Position.Pos_X);
-          const dy = Math.abs(vehicle.Position.Pos_Y - checkpoint.Position.Pos_Y);
-          return Math.sqrt(dx * dx + dy * dy) < 50; // 在检查点50像素范围内
+        const count = this.vehicles.filter(vehicle => {
+          if (vehicle.Position.Pos_X === 0 && vehicle.Position.Pos_Y === 0) return false;
+          const dx = vehicle.Position.Pos_X - checkpoint.Position.Pos_X;
+          const dy = vehicle.Position.Pos_Y - checkpoint.Position.Pos_Y;
+          return Math.sqrt(dx * dx + dy * dy) < 50;
         }).length;
-        
-        // 设置检查点的拥挤等级
-        let level = 0;
-        if (vehiclesNearCheckpoint >= 7) level = 3;
-        else if (vehiclesNearCheckpoint >= 4&& vehiclesNearCheckpoint < 7) level = 2;
-        else if (vehiclesNearCheckpoint >= 0&& vehiclesNearCheckpoint < 4) level = 1;
-        
+
         congestion[checkpointId] = {
           id: checkpointId,
+          name: checkpoint.Name,
           start: checkpoint.Position,
           end: checkpoint.Position,
-          congestionLevel: level
+          congestionLevel: levelOf(count),
+          vehicleCount: count,
         };
       });
-      
+
       this.pathCongestion = congestion;
       return congestion;
     },
@@ -729,15 +756,11 @@ export const useTrafficStore = defineStore('traffic', {
 
     // 触发拥挤预警
     triggerCongestionAlerts() {
-      // 检查是否有路径拥挤等级超过阈值
       const alerts: Record<string, boolean> = {};
       Object.entries(this.pathCongestion).forEach(([pathId, pathSegment]) => {
-        const level = pathSegment.congestionLevel;
-        if (level >= 3) { // 三级拥挤触发预警
-          alerts[pathId] = true;
-        } else {
-          alerts[pathId] = false;
-        }
+        // 跳过仅用于地图渲染的子段（如 path:xxx#0），避免预警列表重复
+        if (pathId.includes('#')) return;
+        alerts[pathId] = pathSegment.congestionLevel >= 3;
       });
       this.congestionAlerts = alerts;
     },
@@ -797,17 +820,16 @@ export const useTrafficStore = defineStore('traffic', {
         
         // 创建轨迹，根据出入口是否一致来决定路径
         const pathData = [];
-        const maxPoints = 10; // 总共最多10个轨迹点
-        
+
         // 只使用第一条历史记录
         if (records.length > 0) {
           const record = records[0];
-          
+
           if (!record) return [];
-          
+
           const enterName = record.EnterName || '未知入口';
           const exitName = record.ExitName || enterName;
-          
+
           let realPath;
           if (enterName === exitName) {
             // 出入口一致，环绕一周路径
@@ -816,33 +838,27 @@ export const useTrafficStore = defineStore('traffic', {
             // 出入口不一致，选择最短路径
             realPath = this.buildRealisticPath(enterName, exitName);
           }
-          
-          const stepSize = Math.max(1, Math.ceil(realPath.length / maxPoints));
-          
-          // 为路径中的每个点添加时间戳和速度信息
-          for (let j = 0; j < realPath.length; j += stepSize) {
-            if (realPath[j]) { // 确保路径点存在
-              pathData.push({
-                id: `${record.VehicleNo}-path-0-${j}`,
-                vehicleNo: record.VehicleNo || vehicleNo,
-                time: record.EnterTime || new Date().toISOString(),
-                position: {
-                  Pos_X: realPath[j]?.x ?? 0,
-                  Pos_Y: realPath[j]?.y ?? 0
-                },
-                speed: record.Speed || 0,
-                enterName: enterName,
-                exitName: exitName
-              });
-              
-              // 检查是否已达到最大点数
-              if (pathData.length >= maxPoints) {
-                break;
-              }
-            }
+
+          // 输出全部插值点，保留路径折线形状；不再做粗暴的等距抽样
+          // （此前 maxPoints=10 抽样会跨越路径拐角，导致轨迹"穿墙"看起来不沿路）
+          for (let j = 0; j < realPath.length; j++) {
+            const point = realPath[j];
+            if (!point) continue;
+            pathData.push({
+              id: `${record.VehicleNo}-path-0-${j}`,
+              vehicleNo: record.VehicleNo || vehicleNo,
+              time: record.EnterTime || new Date().toISOString(),
+              position: {
+                Pos_X: point.x,
+                Pos_Y: point.y,
+              },
+              speed: record.Speed || 0,
+              enterName: enterName,
+              exitName: exitName,
+            });
           }
         }
-        
+
         return pathData;
       } catch (error) {
         console.error('获取车辆轨迹失败:', error);
@@ -879,39 +895,51 @@ export const useTrafficStore = defineStore('traffic', {
         return [{x: pos.x, y: pos.y}];
       }
       
-      // 道路网络 - 定义节点之间的连接关系（根据MapCanvas.vue中的实际道路网络定义）
+      // 道路网络 - 与 MapCanvas.vue / calculatePathCongestion 中的实际道路一致
+      // 每个节点的邻接表合并到一处，避免对象字面量重复键覆盖
       const roadNetwork: Record<string, string[]> = {
-        // 双向连接
-        '西出入口': ['中间点-左中'],      // 西出入口 ↔ 中间点-左中
-        '中间点-左中': ['西出入口'],
-        
-        // 从检查站 1 开始的路径
-        '检查站 1': ['中间点-左中上', '检查站 3'],  // 检查站 1 → 中间点-左中上, 检查站 3
-        '中间点-左中上': ['中间点-左中'],           // 中间点-左中上 → 中间点-左中
-        
-        // 左侧垂直路径
-        '中间点-左中': ['检查站 3'],               // 中间点-左中 → 检查站 3
-        '检查站 3': ['中间点-左下'],               // 检查站 3 → 中间点-左下
-        
+        // 西出入口 ↔ 中间点-左中（双向）
+        '西出入口': ['中间点-左中'],
+
+        // 中间点-左中：可回西出入口；单向去 检查站 3
+        '中间点-左中': ['西出入口', '检查站 3'],
+
+        // 检查站 1：上行去 北出入口（双向）；下行经 中间点-左中上 进入西侧环
+        '检查站 1': ['中间点-左中上', '北出入口'],
+
+        // 中间点-左中上 → 中间点-左中（单向）
+        '中间点-左中上': ['中间点-左中'],
+
+        // 检查站 3 → 中间点-左下（单向）
+        '检查站 3': ['中间点-左下'],
+
+        // 南出入口 ↔ 中间点-左下（双向）
+        '南出入口': ['中间点-左下'],
+        '中间点-左下': ['南出入口', '检查站 5'],
+
         // 底部水平路径
-        '中间点-左下': ['检查站 5'],               // 中间点-左下 → 检查站 5
-        '检查站 5': ['中间点-中下'],               // 检查站 5 → 中间点-中下
-        '中间点-中下': ['检查站 6'],               // 中间点-中下 → 检查站 6
-        
-        // 右侧路径
-        '检查站 6': ['中间点-右中'],               // 检查站 6 → 中间点-右中
-        '中间点-右中': ['检查站 4'],               // 中间点-右中 → 检查站 4
-        '检查站 4': ['中间点-右中上'],             // 检查站 4 → 中间点-右中上
-        '中间点-右中上': ['检查站 2'],             // 中间点-右中上 → 检查站 2
-        '检查站 2': ['检查站 1'],                 // 检查站 2 → 检查站 1
-        
-        // 顶部路径
-        '北出入口': ['检查站 1'],                 // 北出入口 → 检查站 1
-        '检查站 1': ['北出入口'],                 // 检查站 1 → 北出入口 (双向)
-        
-        // 出入口连接
-        '南出入口': ['中间点-左下'],               // 南出入口 → 中间点-左下
-        '东出入口': ['中间点-右中'],               // 东出入口 → 中间点-右中
+        '检查站 5': ['中间点-中下'],
+        '中间点-中下': ['检查站 6'],
+
+        // 检查站 6 → 中间点-右中
+        '检查站 6': ['中间点-右中'],
+
+        // 东出入口 ↔ 中间点-右中（双向）；中间点-右中 → 检查站 4
+        '东出入口': ['中间点-右中'],
+        '中间点-右中': ['东出入口', '检查站 4'],
+
+        // 检查站 4 → 中间点-右中上
+        '检查站 4': ['中间点-右中上'],
+
+        // 中间点-右中上 → 检查站 2
+        '中间点-右中上': ['检查站 2'],
+
+        // 检查站 2 → 中间点-顶部
+        '检查站 2': ['中间点-顶部'],
+
+        // 北出入口 ↔ 中间点-顶部（双向）；中间点-顶部 → 检查站 1
+        '北出入口': ['中间点-顶部'],
+        '中间点-顶部': ['北出入口', '检查站 1'],
       };
       
       // Dijkstra算法找最短路径
@@ -1069,8 +1097,8 @@ export const useTrafficStore = defineStore('traffic', {
     },
     
     // 创建环绕路径（当出入口一致时使用）
+    // 在与 buildRealisticPath 相同的有向道路图上，找一条经过最少节点的"回到起点"闭合路径
     createCircularPath(locationName: string): {x: number, y: number}[] {
-      // 定义所有节点及其坐标（根据地图布局）
       const nodes: Record<string, {x: number, y: number}> = {
         '西出入口': {x: 0, y: 400},
         '东出入口': {x: 800, y: 200},
@@ -1088,81 +1116,97 @@ export const useTrafficStore = defineStore('traffic', {
         '中间点-右中上': {x: 600, y: 500},
         '中间点-右中': {x: 600, y: 200},
         '中间点-中下': {x: 400, y: 100},
-        '中间点-顶部': {x: 400, y: 500}
+        '中间点-顶部': {x: 400, y: 500},
       };
-      
-      // 根据起始点定义一个合理的环绕路径
-      // 从任意出入口出发，环绕整个地图一圈后回到起点
-      let circularRoute: string[];
-      
-      switch(locationName) {
-        case '西出入口':
-          circularRoute = [
-            '西出入口', '中间点-左中', '检查站 3', '南出入口', 
-            '检查站 3', '检查站 5', '中间点-中下', '检查站 6', 
-            '中间点-右中', '检查站 4', '东出入口', '检查站 4', 
-            '中间点-右中上', '检查站 2', '检查站 1', '中间点-顶部', 
-            '北出入口', '中间点-顶部', '检查站 1', '中间点-左中上', 
-            '中间点-左中', '西出入口'
-          ];
-          break;
-        case '东出入口':
-          circularRoute = [
-            '东出入口', '检查站 4', '中间点-右中', '检查站 6', 
-            '中间点-中下', '检查站 5', '检查站 3', '南出入口', 
-            '检查站 3', '中间点-左中', '西出入口', '中间点-左中', 
-            '中间点-左中上', '检查站 1', '中间点-顶部', '北出入口', 
-            '中间点-顶部', '检查站 1', '检查站 2', '中间点-右中上', 
-            '检查站 4', '东出入口'
-          ];
-          break;
-        case '南出入口':
-          circularRoute = [
-            '南出入口', '检查站 3', '中间点-左中', '西出入口', 
-            '中间点-左中', '中间点-左中上', '检查站 1', '中间点-顶部', 
-            '北出入口', '中间点-顶部', '检查站 1', '检查站 2', 
-            '中间点-右中上', '检查站 4', '东出入口', '检查站 4', 
-            '中间点-右中', '检查站 6', '中间点-中下', '检查站 5', 
-            '检查站 3', '南出入口'
-          ];
-          break;
-        case '北出入口':
-          circularRoute = [
-            '北出入口', '中间点-顶部', '检查站 1', '中间点-左中上', 
-            '中间点-左中', '西出入口', '中间点-左中', '检查站 3', 
-            '南出入口', '检查站 3', '检查站 5', '中间点-中下', 
-            '检查站 6', '中间点-右中', '检查站 4', '东出入口', 
-            '检查站 4', '中间点-右中上', '检查站 2', '检查站 1', 
-            '中间点-顶部', '北出入口'
-          ];
-          break;
-        default:
-          // 对于检查站或其他点，定义一个经过主要出入口的路径
-          circularRoute = [
-            locationName, '检查站 1', '中间点-左中上', '中间点-左中', 
-            '西出入口', '中间点-左中', '检查站 3', '南出入口', 
-            '检查站 3', '检查站 5', '中间点-中下', '检查站 6', 
-            '中间点-右中', '检查站 4', '东出入口', '检查站 4', 
-            '中间点-右中上', '检查站 2', '检查站 1', 
-            locationName
-          ];
-          break;
+
+      const roadNetwork: Record<string, string[]> = {
+        '西出入口': ['中间点-左中'],
+        '中间点-左中': ['西出入口', '检查站 3'],
+        '检查站 1': ['中间点-左中上', '北出入口'],
+        '中间点-左中上': ['中间点-左中'],
+        '检查站 3': ['中间点-左下'],
+        '南出入口': ['中间点-左下'],
+        '中间点-左下': ['南出入口', '检查站 5'],
+        '检查站 5': ['中间点-中下'],
+        '中间点-中下': ['检查站 6'],
+        '检查站 6': ['中间点-右中'],
+        '东出入口': ['中间点-右中'],
+        '中间点-右中': ['东出入口', '检查站 4'],
+        '检查站 4': ['中间点-右中上'],
+        '中间点-右中上': ['检查站 2'],
+        '检查站 2': ['中间点-顶部'],
+        '北出入口': ['中间点-顶部'],
+        '中间点-顶部': ['北出入口', '检查站 1'],
+      };
+
+      // 起点不在图上：返回单点（极少出现）
+      if (!nodes[locationName] || !roadNetwork[locationName]) {
+        const pos = nodes[locationName];
+        return pos ? [{ x: pos.x, y: pos.y }] : [];
       }
-      
-      // 移除连续重复的节点
-      const uniqueRoute = circularRoute.filter((node, index) => 
-        index === 0 || node !== circularRoute[index - 1]
-      );
-      
-      // 转换路径节点为坐标点
+
+      // BFS：从起点出发，找最少边数的回到起点的回路
+      // 状态键带"是否已离开起点"标志，避免 0 步即完成
+      type Crumb = { node: string; left: boolean; prev: string | null; prevLeft: boolean };
+      const visited = new Map<string, Crumb>();
+      const startKey = `${locationName}|0`;
+      visited.set(startKey, { node: locationName, left: false, prev: null, prevLeft: false });
+      const queue: Array<{ node: string; left: boolean }> = [{ node: locationName, left: false }];
+
+      let foundKey: string | null = null;
+      while (queue.length) {
+        const cur = queue.shift()!;
+        const neighbors = roadNetwork[cur.node] || [];
+        for (const nb of neighbors) {
+          const nbLeft = cur.left || nb !== locationName;
+          if (nb === locationName && cur.left) {
+            const key = `${nb}|done`;
+            if (!visited.has(key)) {
+              visited.set(key, { node: nb, left: true, prev: cur.node, prevLeft: cur.left });
+              foundKey = key;
+            }
+            break;
+          }
+          const key = `${nb}|${nbLeft ? 1 : 0}`;
+          if (!visited.has(key)) {
+            visited.set(key, { node: nb, left: nbLeft, prev: cur.node, prevLeft: cur.left });
+            queue.push({ node: nb, left: nbLeft });
+          }
+        }
+        if (foundKey) break;
+      }
+
+      // 回溯回路
+      const route: string[] = [];
+      if (foundKey) {
+        let crumb = visited.get(foundKey);
+        route.push(locationName); // 终点
+        while (crumb && crumb.prev !== null) {
+          route.push(crumb.prev);
+          const prevKey = `${crumb.prev}|${crumb.prevLeft ? 1 : 0}`;
+          crumb = visited.get(prevKey);
+        }
+        route.reverse();
+      } else {
+        // 找不到回路，至少返回起点
+        route.push(locationName);
+      }
+
+      // 用与 interpolatePath 相同的密度插值，保证画布上是连续折线
       const path: {x: number, y: number}[] = [];
-      for (const nodeName of uniqueRoute) {
-        const node = nodes[nodeName];
-        if (node) {
-          path.push({x: node.x, y: node.y});
+      for (let i = 0; i < route.length - 1; i++) {
+        const a = nodes[route[i]!];
+        const b = nodes[route[i + 1]!];
+        if (!a || !b) continue;
+        const distance = this.calculateDistance(a, b);
+        const numPoints = Math.max(3, Math.ceil(distance / 50));
+        for (let j = 0; j < numPoints; j++) {
+          const t = j / (numPoints - 1);
+          path.push({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
         }
       }
-      
+      const last = nodes[route[route.length - 1]!];
+      if (last) path.push({ x: last.x, y: last.y });
       return path;
     },
     

@@ -78,9 +78,11 @@ export interface StatisticsByEntry {
 // 路径段信息
 export interface PathSegment {
   id: string; // 路径段ID
+  name?: string; // 用户可读的中文名（如"西出入口 ↔ 中间点-左中"或"检查站 1"）
   start: { Pos_X: number; Pos_Y: number }; // 起点坐标
   end: { Pos_X: number; Pos_Y: number }; // 终点坐标
   congestionLevel: number; // 拥挤等级
+  vehicleCount?: number; // 该路径上当前的车辆数（用于详情显示）
 }
 
 // 路径拥挤程度

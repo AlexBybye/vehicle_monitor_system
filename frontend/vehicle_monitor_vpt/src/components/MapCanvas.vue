@@ -238,62 +238,42 @@ watch(() => store.selectedVehicle, async (newVal) => {
   }
 
   if (newVal) {
-    console.log('Fetching vehicle detail for:', newVal);
     try {
       const detail = await store.fetchVehicleDetail(newVal);
       console.log('Fetch result:', detail);
-      console.log('Vehicle details after fetch:', store.vehicleDetails[newVal]);
 
-      // 获取车辆路径并更新到store
+      // 路径只在选择变化时计算一次（基于历史记录的入/出口推算）
       try {
         const pathData = await store.getVehiclePathForPlayback(newVal);
         store.setVehiclePathToDisplay(pathData);
-        console.log('Vehicle path updated:', pathData);
       } catch (pathError) {
         console.error('Error getting vehicle path:', pathError);
       }
 
-      // 设置定时更新，每隔1秒更新一次选中车辆的详细信息
+      // 后续仅每秒刷新 detail 与位置；不重复请求路径，避免与 HistoryView 写入竞争
       vehicleDetailUpdateInterval.value = setInterval(async () => {
-        if (store.selectedVehicle) {
-          console.log('Updating vehicle detail for:', store.selectedVehicle);
-          try {
-            const updatedDetail = await store.fetchVehicleDetail(store.selectedVehicle);
-            
-            // 检查车辆是否已离开区域（位置为(0,0)），如果是则清除选中状态
-            if (updatedDetail && updatedDetail.Position && 
-                updatedDetail.Position.Pos_X === 0 && updatedDetail.Position.Pos_Y === 0) {
-              console.log('Vehicle has left the area, clearing selection');
-              store.clearSelection();
-            } else {
-              console.log('Updated vehicle detail:', updatedDetail);
-              
-              // 更新车辆路径（如果需要）
-              try {
-                const pathData = await store.getVehiclePathForPlayback(store.selectedVehicle);
-                store.setVehiclePathToDisplay(pathData);
-              } catch (pathError) {
-                console.error('Error updating vehicle path:', pathError);
-              }
-            }
-          } catch (error) {
-            console.error('Error updating vehicle detail:', error);
-          }
-        } else {
-          // 如果没有选中车辆，清除定时器
+        if (!store.selectedVehicle) {
           if (vehicleDetailUpdateInterval.value) {
             clearInterval(vehicleDetailUpdateInterval.value);
             vehicleDetailUpdateInterval.value = null;
           }
+          return;
         }
-      }, 1000); // 每1秒更新一次
+        try {
+          const updatedDetail = await store.fetchVehicleDetail(store.selectedVehicle);
+          if (updatedDetail && updatedDetail.Position &&
+              updatedDetail.Position.Pos_X === 0 && updatedDetail.Position.Pos_Y === 0) {
+            store.clearSelection();
+          }
+        } catch (error) {
+          console.error('Error updating vehicle detail:', error);
+        }
+      }, 1000);
     } catch (error) {
       console.error('Error fetching vehicle detail:', error);
     }
   } else {
-    // 当取消选择车辆时，清除相关信息和定时器
-    console.log('Clearing vehicle selection');
-    // 清除车辆路径显示
+    // 取消选择车辆：清空路径与计时器
     store.setVehiclePathToDisplay([]);
     if (vehicleDetailUpdateInterval.value) {
       clearInterval(vehicleDetailUpdateInterval.value);
@@ -767,11 +747,23 @@ const drawVehicles = (ctx: CanvasRenderingContext2D) => {
 };
 
 // 监听数据变化并重绘
-watch([entries, checkpoints, activeVehicles, () => store.pathCongestion, () => props.showHeatmap], () => {
-  nextTick(() => {
-    drawMap();
-  });
-}, { deep: true });
+watch(
+  [
+    entries,
+    checkpoints,
+    activeVehicles,
+    () => store.pathCongestion,
+    () => store.vehiclePathToDisplay,
+    () => store.selectedVehicle,
+    () => props.showHeatmap,
+  ],
+  () => {
+    nextTick(() => {
+      drawMap();
+    });
+  },
+  { deep: true },
+);
 
 // 处理窗口大小变化
 const handleResize = () => {

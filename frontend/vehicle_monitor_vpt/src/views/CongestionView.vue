@@ -1,120 +1,130 @@
 <template>
   <div class="congestion-view">
     <div class="view-header">
-      <h2 class="title">🚦 路径拥挤分析</h2>
+      <div class="header-left">
+        <h2 class="title">🚦 路径拥挤分析</h2>
+        <p class="subtitle">实时车辆密度 · 来自 calculatePathCongestion</p>
+      </div>
       <div class="view-controls">
-        <button 
-          @click="toggleAutoRefresh" 
+        <button @click="refreshOnce" class="btn btn-secondary">🔄 刷新</button>
+        <button
+          @click="toggleAutoRefresh"
           class="btn"
-          :class="autoRefresh ? 'btn-success' : 'btn-secondary'"
+          :class="autoRefresh ? 'btn-success' : 'btn-primary'"
         >
           <span v-if="autoRefresh">⏸️ 停止自动刷新</span>
-          <span v-else>▶️ 开始自动刷新</span>
+          <span v-else>▶️ 自动刷新 (5s)</span>
         </button>
       </div>
     </div>
-    
+
     <div class="congestion-summary">
-      <div class="summary-card card" :class="getCongestionLevelClass(maxCongestionLevel)">
+      <div class="summary-card card" :class="`accent-${maxCongestionLevel}`">
         <div class="summary-header">
-          <h3 class="summary-title">📊 最高拥挤等级</h3>
+          <h3 class="summary-title">📊 当前最高等级</h3>
           <div class="summary-icon">📈</div>
         </div>
-        <p class="summary-value">{{ maxCongestionLevel }}</p>
+        <p class="summary-value">{{ levelText(maxCongestionLevel) }}</p>
         <div class="summary-status">
-          <span :class="getCongestionLevelClass(maxCongestionLevel)">
-            {{ getCongestionLevelText(maxCongestionLevel) }}
+          <span class="badge" :class="`badge-${maxCongestionLevel}`">
+            {{ levelDescription(maxCongestionLevel) }}
           </span>
         </div>
       </div>
-      
-      <div class="summary-card card">
+
+      <div class="summary-card card accent-2">
         <div class="summary-header">
-          <h3 class="summary-title">🛣️ 拥挤路径数</h3>
+          <h3 class="summary-title">🛣️ 拥堵路径数</h3>
           <div class="summary-icon">⚠️</div>
         </div>
         <p class="summary-value">{{ congestedPathsCount }}</p>
         <div class="summary-status">
-          <span class="status-warning">超过阈值的路径</span>
+          <span class="muted">中度及以上 ({{ heavyPathsCount }} 严重)</span>
         </div>
       </div>
-      
-      <div class="summary-card card">
+
+      <div class="summary-card card accent-3">
         <div class="summary-header">
-          <h3 class="summary-title">🚨 预警路径数</h3>
+          <h3 class="summary-title">🚨 预警路径</h3>
           <div class="summary-icon">🚨</div>
         </div>
         <p class="summary-value">{{ alertPathsCount }}</p>
         <div class="summary-status">
-          <span class="status-alert">需要关注的路径</span>
+          <span class="muted">已触发的严重预警</span>
         </div>
       </div>
     </div>
-    
+
     <div class="path-list card">
       <div class="list-header">
-        <h3>🛣️ 路径拥挤详情</h3>
-        <div class="list-actions">
-          <button class="btn btn-small btn-secondary">📄 导出</button>
+        <h3>🛣️ 路径拥堵详情</h3>
+        <div class="filter-tabs">
+          <button
+            v-for="tab in filterTabs"
+            :key="tab.value"
+            class="tab"
+            :class="{ active: filter === tab.value }"
+            @click="filter = tab.value"
+          >
+            {{ tab.label }}
+            <span class="tab-count">{{ countForTab(tab.value) }}</span>
+          </button>
         </div>
       </div>
       <div class="congestion-list">
-        <div 
-          v-for="(pathSegment, pathId) in store.pathCongestion" 
-          :key="pathId" 
-          class="path-item card"
-          :class="getCongestionLevelClass(pathSegment.congestionLevel)"
+        <div v-if="filteredPaths.length === 0" class="empty-state">
+          没有匹配的路径
+        </div>
+        <div
+          v-for="ps in filteredPaths"
+          :key="ps.id"
+          class="path-item"
+          :class="`accent-${ps.congestionLevel}`"
         >
-          <div class="path-info">
+          <div class="path-row">
             <div class="path-name">
-              <h4>📍 路径: {{ pathId }}</h4>
-              <span class="level-badge" :class="getCongestionLevelClass(pathSegment.congestionLevel)">
-                {{ getCongestionLevelText(pathSegment.congestionLevel) }}
-              </span>
+              <span class="path-icon">{{ ps.id.startsWith('checkpoint-') ? '📍' : '🛣️' }}</span>
+              <span class="name-text">{{ ps.name || ps.id }}</span>
             </div>
-            <div class="path-actions">
-              <button class="btn btn-small btn-secondary">🔍 查看详情</button>
-            </div>
+            <span class="badge" :class="`badge-${ps.congestionLevel}`">
+              {{ levelText(ps.congestionLevel) }}
+            </span>
           </div>
-          <div class="path-details">
-            <div class="congestion-bar-container">
-              <div class="congestion-labels">
-                <span>畅通</span>
-                <span>拥挤</span>
-              </div>
-              <div class="level-indicator">
-                <div 
-                  class="level-bar" 
-                  :style="{ width: `${(pathSegment.congestionLevel / 3) * 100}%`, backgroundColor: getCongestionColor(pathSegment.congestionLevel) }"
-                ></div>
-              </div>
-              <div class="congestion-percent">{{ Math.round((pathSegment.congestionLevel / 3) * 100) }}%</div>
-            </div>
+          <div class="path-meta">
+            <span>当前车辆数：<strong>{{ ps.vehicleCount ?? 0 }}</strong></span>
+            <span class="dot">·</span>
+            <span>{{ levelDescription(ps.congestionLevel) }}</span>
+          </div>
+          <div class="level-track">
+            <div
+              class="level-fill"
+              :style="{
+                width: `${(ps.congestionLevel / 3) * 100}%`,
+                background: levelColor(ps.congestionLevel)
+              }"
+            />
           </div>
         </div>
       </div>
     </div>
-    
-    <!-- 地图可视化 -->
+
     <div class="map-visualization card">
-      <h3 class="visualization-title">🗺️ 拥挤程度地图可视化</h3>
+      <h3 class="visualization-title">🗺️ 拥挤程度地图</h3>
       <div class="map-wrapper">
         <MapCanvas :canvas-width="800" :canvas-height="600" :show-heatmap="true" />
       </div>
     </div>
-    
-    <!-- 预警信息 -->
+
     <div v-if="alertPathsCount > 0" class="alerts card">
       <h3 class="alert-title">🚨 拥挤预警</h3>
       <div class="alert-list">
-        <div 
-          v-for="(isAlert, pathId) in store.congestionAlerts" 
-          :key="pathId" 
-          v-show="isAlert"
+        <div
+          v-for="ps in alertPaths"
+          :key="ps.id"
           class="alert-item"
         >
-          <span class="alert-path">📍 路径 {{ pathId }}</span>
-          <span class="alert-level status-heavy">严重拥挤</span>
+          <span>📍 {{ ps.name || ps.id }}</span>
+          <span class="badge badge-3">严重拥堵</span>
         </div>
       </div>
     </div>
@@ -125,100 +135,102 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue';
 import { useTrafficStore } from '@/store/trafficStore';
 import MapCanvas from '@/components/MapCanvas.vue';
+import type { PathSegment } from '@/types';
 
 const store = useTrafficStore();
-
-// 自动刷新状态
 const autoRefresh = ref(false);
 let refreshInterval: ReturnType<typeof setInterval> | null = null;
 
-// 计算最大拥挤等级
-const maxCongestionLevel = computed(() => {
-  return Math.max(...Object.values(store.pathCongestion).map(ps => ps.congestionLevel), 0);
-});
+// 过滤掉用于地图渲染的子段（id 含 #）
+const allMainPaths = computed<PathSegment[]>(() =>
+  Object.values(store.pathCongestion).filter(ps => !ps.id.includes('#'))
+);
 
-// 计算拥挤路径数量
-const congestedPathsCount = computed(() => {
-  return Object.values(store.pathCongestion).filter(ps => ps.congestionLevel > 0).length;
-});
+const maxCongestionLevel = computed(() =>
+  Math.max(...allMainPaths.value.map(ps => ps.congestionLevel), 0)
+);
+const congestedPathsCount = computed(() =>
+  allMainPaths.value.filter(ps => ps.congestionLevel >= 2).length
+);
+const heavyPathsCount = computed(() =>
+  allMainPaths.value.filter(ps => ps.congestionLevel >= 3).length
+);
+const alertPaths = computed(() =>
+  allMainPaths.value.filter(ps => ps.congestionLevel >= 3)
+);
+const alertPathsCount = computed(() => alertPaths.value.length);
 
-// 计算预警路径数量
-const alertPathsCount = computed(() => {
-  return Object.values(store.congestionAlerts).filter(alert => alert).length;
-});
-
-// 获取拥挤等级文本
-const getCongestionLevelText = (level: number) => {
-  switch(level) {
-    case 0: return '畅通';
-    case 1: return '轻度拥挤 (1-3辆车)';
-    case 2: return '中度拥挤 (4-6辆车)';
-    case 3: return '严重拥挤 (7+辆车)';
-    default: return '未知';
+const filter = ref<'all' | 'congested' | 'alert' | 'clear'>('all');
+const filterTabs: Array<{ label: string; value: 'all' | 'congested' | 'alert' | 'clear' }> = [
+  { label: '全部', value: 'all' },
+  { label: '畅通', value: 'clear' },
+  { label: '拥堵', value: 'congested' },
+  { label: '严重', value: 'alert' },
+];
+const countForTab = (v: 'all' | 'congested' | 'alert' | 'clear') => {
+  switch (v) {
+    case 'all': return allMainPaths.value.length;
+    case 'clear': return allMainPaths.value.filter(ps => ps.congestionLevel <= 0).length;
+    case 'congested': return allMainPaths.value.filter(ps => ps.congestionLevel >= 1).length;
+    case 'alert': return allMainPaths.value.filter(ps => ps.congestionLevel >= 3).length;
   }
 };
 
-// 获取拥挤等级CSS类
-const getCongestionLevelClass = (level: number) => {
-  if (level === 0) return 'level-0';
-  if (level === 1) return 'level-1';
-  if (level === 2) return 'level-2';
-  if (level >= 3) return 'level-3';
-  return '';
+const filteredPaths = computed(() => {
+  let list = allMainPaths.value;
+  if (filter.value === 'clear') list = list.filter(ps => ps.congestionLevel <= 0);
+  else if (filter.value === 'congested') list = list.filter(ps => ps.congestionLevel >= 1);
+  else if (filter.value === 'alert') list = list.filter(ps => ps.congestionLevel >= 3);
+  return [...list].sort((a, b) => b.congestionLevel - a.congestionLevel || (b.vehicleCount ?? 0) - (a.vehicleCount ?? 0));
+});
+
+const levelText = (level: number) => {
+  if (level <= 0) return '畅通';
+  if (level === 1) return '轻度';
+  if (level === 2) return '中度';
+  return '严重';
+};
+const levelDescription = (level: number) => {
+  if (level <= 0) return '无车辆 (0 辆)';
+  if (level === 1) return '轻度拥堵 (1-3 辆)';
+  if (level === 2) return '中度拥堵 (4-6 辆)';
+  return '严重拥堵 (≥ 7 辆)';
+};
+const levelColor = (level: number) => {
+  if (level <= 0) return 'linear-gradient(90deg, #22c55e, #4ade80)';
+  if (level === 1) return 'linear-gradient(90deg, #facc15, #eab308)';
+  if (level === 2) return 'linear-gradient(90deg, #f97316, #ea580c)';
+  return 'linear-gradient(90deg, #ef4444, #dc2626)';
 };
 
-// 获取拥挤颜色
-const getCongestionColor = (level: number) => {
-  switch(level) {
-    case 0: return '#4CAF50'; // 绿色
-    case 1: return '#FFEB3B'; // 黄色
-    case 2: return '#FF9800'; // 橙色
-    case 3: return '#F44336'; // 红色
-    default: return '#9E9E9E';
-  }
-};
+const refreshOnce = () => store.fetchVehiclePositions();
 
-
-
-// 切换自动刷新
 const toggleAutoRefresh = () => {
   autoRefresh.value = !autoRefresh.value;
-  
   if (autoRefresh.value) {
-    // 开启自动刷新
-    refreshInterval = setInterval(() => {
-      store.fetchVehiclePositions();
-    }, 5000); // 每5秒更新一次
-  } else {
-    // 关闭自动刷新
-    if (refreshInterval) {
-      clearInterval(refreshInterval);
-      refreshInterval = null;
-    }
+    refreshInterval = setInterval(refreshOnce, 5000);
+  } else if (refreshInterval) {
+    clearInterval(refreshInterval);
+    refreshInterval = null;
   }
 };
 
-// 初始化数据
 onMounted(async () => {
   await Promise.all([
     store.fetchEntries(),
     store.fetchCheckpoints(),
-    store.fetchVehiclePositions()
+    store.fetchVehiclePositions(),
   ]);
-  // calculatePathCongestion和triggerCongestionAlerts现在在fetchVehiclePositions中自动调用
 });
 
-// 组件卸载时清理定时器
 onUnmounted(() => {
-  if (refreshInterval) {
-    clearInterval(refreshInterval);
-  }
+  if (refreshInterval) clearInterval(refreshInterval);
 });
 </script>
 
 <style scoped>
 .congestion-view {
-  padding: 1rem;
+  padding: 1.5rem;
   min-height: 100vh;
   background: linear-gradient(135deg, var(--gray-50) 0%, var(--gray-100) 100%);
 }
@@ -228,452 +240,254 @@ onUnmounted(() => {
   justify-content: space-between;
   align-items: center;
   margin-bottom: 1.5rem;
-  padding: 1rem;
+  padding: 1.25rem 1.5rem;
   background: white;
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-md);
 }
+.header-left { display: flex; flex-direction: column; gap: 0.25rem; }
+.title { margin: 0; font-size: 1.5rem; font-weight: 700; color: var(--gray-800); }
+.subtitle { margin: 0; font-size: 0.85rem; color: var(--gray-500); }
 
-.title {
-  margin: 0;
-  font-size: 1.5rem;
-  color: var(--gray-800);
-  font-weight: 600;
-}
-
-.controls {
-  display: flex;
-  gap: 1rem;
-}
-
-.view-controls {
-  display: flex;
-  gap: 1rem;
-}
+.view-controls { display: flex; gap: 0.5rem; }
 
 .btn {
-  padding: 0.75rem 1rem;
+  padding: 0.6rem 1rem;
   border: none;
   border-radius: var(--radius);
   cursor: pointer;
-  font-size: 0.95rem;
+  font-size: 0.9rem;
   font-weight: 500;
-  transition: var(--transition-normal);
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  justify-content: center;
-  gap: 0.5rem;
+  gap: 0.4rem;
+  transition: var(--transition-normal);
 }
-
-.btn:hover:not(:disabled) {
-  transform: translateY(-2px);
-  box-shadow: var(--shadow-lg);
-}
-
-.btn:active:not(:disabled) {
-  transform: translateY(0);
-}
-
+.btn:hover { transform: translateY(-1px); box-shadow: var(--shadow-md); }
 .btn-primary {
-  background: linear-gradient(135deg, var(--primary-color) 0%, var(--secondary-color) 100%);
+  background: linear-gradient(135deg, var(--primary-color), var(--secondary-color));
   color: white;
 }
-
-.btn-primary:hover:not(:disabled) {
-  background: linear-gradient(135deg, #3a56e4 0%, #362fc0 100%);
-}
-
-.btn-secondary {
-  background: var(--gray-200);
-  color: var(--gray-800);
-}
-
-.btn-secondary:hover:not(:disabled) {
-  background: var(--gray-300);
-}
-
-.btn-success {
-  background: linear-gradient(135deg, var(--success-color) 0%, #22c55e 100%);
-  color: white;
-}
-
-.btn-success:hover:not(:disabled) {
-  background: linear-gradient(135deg, #22c55e 0%, #16a34a 100%);
-}
-
-.btn-small {
-  padding: 0.5rem 0.75rem;
-  font-size: 0.85rem;
-}
+.btn-secondary { background: var(--gray-100); color: var(--gray-700); }
+.btn-success { background: linear-gradient(135deg, #22c55e, #16a34a); color: white; }
 
 .congestion-summary {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-  gap: 1.5rem;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 1.25rem;
   margin-bottom: 1.5rem;
 }
 
 .summary-card {
-  padding: 1.5rem;
-  border: none;
-  transition: var(--transition-normal);
   position: relative;
-  overflow: hidden;
+  padding: 1.25rem 1.5rem;
   background: white;
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+  transition: var(--transition-normal);
+  overflow: hidden;
 }
-
 .summary-card::before {
   content: '';
   position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
+  top: 0; left: 0; right: 0;
   height: 4px;
-  background: linear-gradient(90deg, var(--primary-color), var(--accent-color));
+  background: var(--gray-300);
 }
-
-.summary-card:hover {
-  transform: translateY(-6px);
-  box-shadow: var(--shadow-xl);
-}
+.summary-card.accent-0::before { background: linear-gradient(90deg, #22c55e, #4ade80); }
+.summary-card.accent-1::before { background: linear-gradient(90deg, #facc15, #eab308); }
+.summary-card.accent-2::before { background: linear-gradient(90deg, #f97316, #ea580c); }
+.summary-card.accent-3::before { background: linear-gradient(90deg, #ef4444, #dc2626); }
+.summary-card:hover { transform: translateY(-3px); box-shadow: var(--shadow-lg); }
 
 .summary-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 1rem;
+  margin-bottom: 0.5rem;
 }
-
-.summary-title {
-  margin: 0;
-  font-size: 0.95rem;
-  color: var(--gray-600);
-  font-weight: 500;
-}
-
-.summary-icon {
-  font-size: 1.5rem;
-}
-
+.summary-title { margin: 0; font-size: 0.9rem; color: var(--gray-600); font-weight: 500; }
+.summary-icon { font-size: 1.4rem; }
 .summary-value {
-  margin: 0 0 1rem 0;
-  font-size: 2.5rem;
+  margin: 0;
+  font-size: 2rem;
   font-weight: 700;
-  color: var(--gray-800);
-  text-align: center;
-}
-
-.summary-status {
-  text-align: center;
-}
-
-.status-clear {
-  background: linear-gradient(135deg, #4ade80, #22c55e);
-  color: white;
-  padding: 0.25rem 0.75rem;
-  border-radius: var(--radius-full);
-  font-size: 0.85rem;
-  font-weight: 500;
-}
-
-.status-light {
-  background: linear-gradient(135deg, #facc15, #eab308);
   color: var(--gray-900);
-  padding: 0.25rem 0.75rem;
+  line-height: 1.1;
+}
+.summary-status { margin-top: 0.6rem; }
+.muted { font-size: 0.85rem; color: var(--gray-500); }
+
+.badge {
+  display: inline-block;
+  padding: 0.2rem 0.7rem;
   border-radius: var(--radius-full);
-  font-size: 0.85rem;
-  font-weight: 500;
+  font-size: 0.8rem;
+  font-weight: 600;
 }
-
-.status-medium {
-  background: linear-gradient(135deg, #f97316, #ea580c);
-  color: white;
-  padding: 0.25rem 0.75rem;
-  border-radius: var(--radius-full);
-  font-size: 0.85rem;
-  font-weight: 500;
-}
-
-.status-heavy {
-  background: linear-gradient(135deg, #f87171, #ef4444);
-  color: white;
-  padding: 0.25rem 0.75rem;
-  border-radius: var(--radius-full);
-  font-size: 0.85rem;
-  font-weight: 500;
-}
-
-.status-warning {
-  color: var(--warning-color);
-  font-weight: 500;
-}
-
-.status-alert {
-  color: var(--danger-color);
-  font-weight: 500;
-}
-
-.details {
-  background: white;
-  border-radius: 8px;
-  padding: 20px;
-  margin-bottom: 30px;
-  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-}
+.badge-0 { background: #dcfce7; color: #15803d; }
+.badge-1 { background: #fef9c3; color: #854d0e; }
+.badge-2 { background: #ffedd5; color: #9a3412; }
+.badge-3 { background: #fee2e2; color: #991b1b; }
 
 .path-list {
-  padding: 1.5rem;
-  border: none;
+  padding: 1.25rem 1.5rem;
+  margin-bottom: 1.5rem;
   background: white;
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
 }
-
 .list-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 1.5rem;
-  padding-bottom: 1rem;
-  border-bottom: 1px solid var(--gray-200);
+  margin-bottom: 1rem;
+  flex-wrap: wrap;
+  gap: 1rem;
 }
+.list-header h3 { margin: 0; font-size: 1.1rem; font-weight: 600; color: var(--gray-800); }
 
-.list-header h3 {
-  margin: 0;
-  color: var(--gray-800);
-  font-size: 1.2rem;
-  font-weight: 600;
+.filter-tabs { display: flex; gap: 0.4rem; }
+.tab {
+  padding: 0.4rem 0.85rem;
+  border: 1px solid var(--gray-200);
+  background: white;
+  border-radius: var(--radius-full);
+  font-size: 0.85rem;
+  cursor: pointer;
+  color: var(--gray-700);
+  transition: var(--transition-fast);
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
 }
-
-.list-actions {
-  display: flex;
-  gap: 0.5rem;
+.tab.active {
+  background: var(--primary-color);
+  color: white;
+  border-color: var(--primary-color);
 }
+.tab-count {
+  background: rgba(0,0,0,0.06);
+  padding: 0 0.45rem;
+  border-radius: var(--radius-full);
+  font-size: 0.75rem;
+}
+.tab.active .tab-count { background: rgba(255,255,255,0.25); color: white; }
 
 .congestion-list {
-  max-height: 400px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 0.75rem;
+  max-height: 520px;
   overflow-y: auto;
+  padding-right: 0.25rem;
+}
+.empty-state {
+  grid-column: 1 / -1;
+  text-align: center;
+  padding: 2rem;
+  color: var(--gray-500);
 }
 
 .path-item {
-  margin-bottom: 1rem;
-  padding: 1.25rem;
-  border: none;
-  transition: var(--transition-normal);
+  position: relative;
+  padding: 0.85rem 1rem;
+  border-radius: var(--radius);
+  background: var(--gray-50);
+  border-left: 4px solid var(--gray-300);
+  transition: var(--transition-fast);
 }
+.path-item.accent-0 { border-left-color: #22c55e; }
+.path-item.accent-1 { border-left-color: #eab308; }
+.path-item.accent-2 { border-left-color: #ea580c; }
+.path-item.accent-3 { border-left-color: #dc2626; background: #fef2f2; }
+.path-item:hover { transform: translateX(2px); box-shadow: var(--shadow-sm); }
 
-.path-item:hover {
-  transform: translateX(4px);
-  box-shadow: var(--shadow-md);
-}
-
-.congestion-item {
-  padding: 15px;
-  border-radius: 6px;
-  margin-bottom: 10px;
-  border-left: 4px solid #ddd;
-}
-
-.congestion-item .path-info {
+.path-row {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 8px;
+  gap: 0.5rem;
 }
-
-.path-info {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 1rem;
-}
-
 .path-name {
   display: flex;
-  flex-direction: column;
+  align-items: center;
   gap: 0.5rem;
+  min-width: 0;
 }
-
-.path-name h4 {
-  margin: 0;
-  color: var(--gray-800);
-  font-size: 1.1rem;
+.path-icon { font-size: 1rem; }
+.name-text {
   font-weight: 600;
+  color: var(--gray-800);
+  font-size: 0.95rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
-
-.level-badge {
-  background: #e0e0e0;
-  padding: 4px 8px;
-  border-radius: 12px;
-  font-size: 0.8em;
-}
-
-.level-badge.status-clear,
-.level-badge.status-light,
-.level-badge.status-medium,
-.level-badge.status-heavy {
-  display: inline-block;
-  padding: 0.25rem 0.75rem;
-  border-radius: var(--radius-full);
-  font-size: 0.85rem;
-  font-weight: 500;
-}
-
-.level-description {
-  font-size: 0.9em;
-  color: #666;
-  margin-bottom: 8px;
-}
-
-.path-actions {
+.path-meta {
   display: flex;
-  gap: 0.5rem;
-}
-
-.path-details {
-  display: flex;
-  flex-direction: column;
-  gap: 0.75rem;
-}
-
-.congestion-bar-container {
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-}
-
-.congestion-labels {
-  display: flex;
-  justify-content: space-between;
+  gap: 0.4rem;
+  align-items: center;
   font-size: 0.8rem;
   color: var(--gray-600);
+  margin-top: 0.4rem;
 }
-
-.level-indicator {
-  height: 24px;
-  background-color: var(--gray-200);
-  border-radius: 12px;
+.dot { color: var(--gray-300); }
+.level-track {
+  margin-top: 0.5rem;
+  height: 6px;
+  background: var(--gray-200);
+  border-radius: var(--radius-full);
   overflow: hidden;
-  position: relative;
 }
-
-.level-bar {
-  height: 100%;
-  transition: width 0.3s ease;
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  padding-right: 8px;
-  color: white;
-  font-size: 0.75rem;
-  font-weight: 500;
-}
-
-.congestion-percent {
-  text-align: right;
-  font-size: 0.9rem;
-  font-weight: 600;
-  color: var(--gray-700);
-}
+.level-fill { height: 100%; transition: width 0.3s ease; }
 
 .map-visualization {
   background: white;
-  border-radius: 8px;
-  padding: 20px;
-  margin-bottom: 30px;
-  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+  border-radius: var(--radius-lg);
+  padding: 1.25rem 1.5rem;
+  margin-bottom: 1.5rem;
+  box-shadow: var(--shadow-sm);
 }
-
 .visualization-title {
   margin: 0 0 1rem 0;
+  font-size: 1.1rem;
   color: var(--gray-800);
-  font-size: 1.2rem;
   font-weight: 600;
 }
-
 .map-wrapper {
-  position: relative;
-  border: 1px solid #ddd;
-  border-radius: 8px;
+  border: 1px solid var(--gray-200);
+  border-radius: var(--radius);
   overflow: hidden;
-  margin-top: 15px;
-}
-
-.heatmap-wrapper {
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 100%;
-  height: 100%;
-  pointer-events: none; /* 使热力图不影响底层元素的交互 */
 }
 
 .alerts {
   background: white;
-  border-radius: 8px;
-  padding: 20px;
-  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+  border-radius: var(--radius-lg);
+  padding: 1.25rem 1.5rem;
+  box-shadow: var(--shadow-sm);
 }
-
 .alert-title {
-  margin: 0 0 1rem 0;
+  margin: 0 0 0.85rem 0;
+  font-size: 1.1rem;
   color: var(--gray-800);
-  font-size: 1.2rem;
   font-weight: 600;
 }
-
-.alert-list {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
+.alert-list { display: flex; flex-direction: column; gap: 0.5rem; }
 .alert-item {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 10px;
-  background-color: #ffebee;
-  border-radius: 4px;
-  border-left: 4px solid #f44336;
+  padding: 0.65rem 0.85rem;
+  background: #fef2f2;
+  border-left: 4px solid #dc2626;
+  border-radius: var(--radius);
+  font-size: 0.9rem;
 }
 
-.alert-level {
-  background-color: #f44336;
-  color: white;
-  padding: 4px 8px;
-  border-radius: 12px;
-  font-size: 0.8em;
-}
-
-/* 响应式设计 */
 @media (max-width: 768px) {
-  .view-header {
-    flex-direction: column;
-    align-items: stretch;
-    gap: 1rem;
-  }
-  
-  .congestion-summary {
-    grid-template-columns: 1fr;
-  }
-  
-  .path-info {
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 1rem;
-  }
-  
-  .list-header {
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 1rem;
-  }
-  
-  .list-actions {
-    align-self: stretch;
-  }
-  
-  .btn {
-    flex: 1;
-  }
+  .view-header { flex-direction: column; align-items: stretch; gap: 1rem; }
+  .congestion-summary { grid-template-columns: 1fr; }
+  .congestion-list { grid-template-columns: 1fr; }
 }
 </style>
