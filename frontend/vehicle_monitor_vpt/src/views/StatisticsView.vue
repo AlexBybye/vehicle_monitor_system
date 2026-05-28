@@ -171,19 +171,27 @@ const heavyCongestionCount = computed(() =>
     .length
 );
 
-// 出入口累计车辆数：用 store 维护的累计计数（同一辆车再次出现也 +1）
+// 出入口累计通行车辆数：从历史记录派生（每条记录 = 一次通行；同车再次出现自然 +1）
+// EnterName / ExitName 都计入对应出入口的"通行总数"
 const entryFlowData = computed(() => {
+  const counts: Record<string, number> = {};
+  for (const r of store.historyRecords) {
+    if (r.EnterName) counts[r.EnterName] = (counts[r.EnterName] || 0) + 1;
+    if (r.ExitName) counts[r.ExitName] = (counts[r.ExitName] || 0) + 1;
+  }
   return store.entries.map(e => ({
     label: e.Name,
-    value: store.cumulativeEntryCounts[e.No] || 0,
+    value: counts[e.Name] || 0,
   }));
 });
 
-// 过去一小时每 5 分钟进入分布（12 个桶，按当前时间向前推 60 分钟）
+// 过去一小时每 5 分钟进入分布：从历史记录的 EnterTime 派生（12 个桶）
 const pastHourFlowData = computed(() => {
   const now = Date.now();
   const buckets = Array(12).fill(0);
-  for (const t of store.recentEntryTimestamps) {
+  for (const r of store.historyRecords) {
+    const t = parseDotNetTime(r.EnterTime);
+    if (t === null) continue;
     const diffMs = now - t;
     if (diffMs < 0 || diffMs > 60 * 60 * 1000) continue;
     const idx = 11 - Math.floor(diffMs / (5 * 60 * 1000));
@@ -196,13 +204,24 @@ const pastHourFlowData = computed(() => {
   });
 });
 
-// 检查点分布：实时（store.pathCongestion 当前车辆数）/ 累计（去重车辆数）
+// 检查点分布：
+// - 实时：store.pathCongestion 中 checkpoint-* 当前车辆数
+// - 累计：基于每条历史记录的入口→出口路线，途经的检查点 +1
+const cumulativeCheckpointCounts = computed<Record<string, number>>(() => {
+  const counts: Record<string, number> = {};
+  for (const r of store.historyRecords) {
+    if (!r.EnterName) continue;
+    const route = store.getCheckpointsAlongRoute(r.EnterName, r.ExitName || r.EnterName);
+    for (const cp of route) {
+      counts[cp] = (counts[cp] || 0) + 1;
+    }
+  }
+  return counts;
+});
 const checkpointDistribution = computed(() =>
   store.checkpoints.map(c => {
     if (checkpointMode.value === 'cumulative') {
-      const visits = store.cumulativeCheckpointVisits[c.No];
-      const count = visits ? Object.keys(visits).length : 0;
-      return { label: c.Name, value: count };
+      return { label: c.Name, value: cumulativeCheckpointCounts.value[c.Name] || 0 };
     }
     const seg = store.pathCongestion[`checkpoint-${c.No}`];
     return { label: c.Name, value: seg?.vehicleCount ?? 0 };
@@ -217,6 +236,8 @@ const refreshAll = async () => {
       store.fetchCheckpoints(),
       store.fetchVehiclePositions(),
     ]);
+    // 拉取所有车辆历史 - 累计统计与过去一小时分布的数据源
+    await store.fetchAllVehiclesHistory();
   } finally {
     loading.value = false;
   }
@@ -226,8 +247,8 @@ const toggleAutoRefresh = () => {
   autoRefresh.value = !autoRefresh.value;
   if (autoRefresh.value) {
     refreshInterval = setInterval(() => {
-      // 仅刷新车辆位置即可累计统计；不重复拉取出入口/检查点的静态数据
       store.fetchVehiclePositions();
+      store.fetchAllVehiclesHistory();
     }, 3000);
   } else if (refreshInterval) {
     clearInterval(refreshInterval);

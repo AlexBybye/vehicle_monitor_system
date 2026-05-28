@@ -177,13 +177,13 @@ const originalHistoryRecords = ref<VehicleHistory[]>([]);
 
 // 初始化：未选择车辆时，加载所有车辆的历史，提供"总计/平均/最高"基准数据
 onMounted(async () => {
-  if (store.vehicles.length === 0) {
-    await store.fetchVehiclePositions();
-  }
-  if (store.historyRecords.length === 0) {
-    await store.fetchAllVehiclesHistory();
-    originalHistoryRecords.value = [...store.historyRecords];
-  }
+  // 确保基础数据可用
+  if (store.entries.length === 0) await store.fetchEntries();
+  if (store.checkpoints.length === 0) await store.fetchCheckpoints();
+  if (store.vehicles.length === 0) await store.fetchVehiclePositions();
+  // 默认加载全部车辆的历史，作为"未选择车辆"时的列表与统计数据源
+  await store.fetchAllVehiclesHistory();
+  originalHistoryRecords.value = [...store.historyRecords];
 });
 
 // 搜索处理（保留原有功能）
@@ -191,7 +191,9 @@ const handleSearch = async (query: string) => {
   if (query.trim()) {
     await store.fetchVehiclesHistory(query.trim(), 1);
     selectedVehicleNo.value = query.trim(); // 同步选择的车辆
-    currentPage.value = 1; // 重置到第一页
+    // 切换数据集后，重置时间筛选基线，避免上次筛选的"原始记录"错位
+    originalHistoryRecords.value = [...store.historyRecords];
+    currentPage.value = 1;
   }
 };
 
@@ -199,8 +201,9 @@ const handleSearch = async (query: string) => {
 const handleManualSearch = async () => {
   if (manualVehicleNo.value.trim()) {
     await store.fetchVehiclesHistory(manualVehicleNo.value.trim(), 1);
-    selectedVehicleNo.value = manualVehicleNo.value.trim(); // 同步选择的车辆
-    currentPage.value = 1; // 重置到第一页
+    selectedVehicleNo.value = manualVehicleNo.value.trim();
+    originalHistoryRecords.value = [...store.historyRecords];
+    currentPage.value = 1;
   }
 };
 
@@ -283,12 +286,16 @@ const clearDateFilter = () => {
   currentPage.value = 1; // 重置到第一页
 };
 
-// 加载车辆历史
+// 加载车辆历史；如果用户选择的是"请选择车辆"（空值），则加载全部车辆历史
 const loadVehicleHistory = async () => {
   if (selectedVehicleNo.value) {
     await store.fetchVehiclesHistory(selectedVehicleNo.value, 1);
-    currentPage.value = 1; // 重置到第一页
+  } else {
+    await store.fetchAllVehiclesHistory();
   }
+  // 切换数据集，重置时间筛选基线
+  originalHistoryRecords.value = [...store.historyRecords];
+  currentPage.value = 1;
 };
 
 // 计算分页数据
