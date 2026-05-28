@@ -185,13 +185,12 @@ const entryFlowData = computed(() => {
   }));
 });
 
-// 过去一小时每 5 分钟进入分布：从历史记录的 EnterTime 派生（12 个桶）
+// 过去一小时每 5 分钟进入分布：基于"进入区域"事件流（每次车辆从区域外->区域内 +1）
+// 用真实事件时间戳分桶，5 分钟前及以外的桶不会因为刷新而变动
 const pastHourFlowData = computed(() => {
   const now = Date.now();
   const buckets = Array(12).fill(0);
-  for (const r of store.historyRecords) {
-    const t = parseDotNetTime(r.EnterTime);
-    if (t === null) continue;
+  for (const t of store.cumulativeEntryTimestamps) {
     const diffMs = now - t;
     if (diffMs < 0 || diffMs > 60 * 60 * 1000) continue;
     const idx = 11 - Math.floor(diffMs / (5 * 60 * 1000));
@@ -206,22 +205,11 @@ const pastHourFlowData = computed(() => {
 
 // 检查点分布：
 // - 实时：store.pathCongestion 中 checkpoint-* 当前车辆数
-// - 累计：基于每条历史记录的入口→出口路线，途经的检查点 +1
-const cumulativeCheckpointCounts = computed<Record<string, number>>(() => {
-  const counts: Record<string, number> = {};
-  for (const r of store.historyRecords) {
-    if (!r.EnterName) continue;
-    const route = store.getCheckpointsAlongRoute(r.EnterName, r.ExitName || r.EnterName);
-    for (const cp of route) {
-      counts[cp] = (counts[cp] || 0) + 1;
-    }
-  }
-  return counts;
-});
+// - 累计：每次车辆从"不在某检查点 50px 范围"变为"在范围"时该检查点 +1（事件计数器）
 const checkpointDistribution = computed(() =>
   store.checkpoints.map(c => {
     if (checkpointMode.value === 'cumulative') {
-      return { label: c.Name, value: cumulativeCheckpointCounts.value[c.Name] || 0 };
+      return { label: c.Name, value: store.cumulativeCheckpointPasses[c.No] || 0 };
     }
     const seg = store.pathCongestion[`checkpoint-${c.No}`];
     return { label: c.Name, value: seg?.vehicleCount ?? 0 };

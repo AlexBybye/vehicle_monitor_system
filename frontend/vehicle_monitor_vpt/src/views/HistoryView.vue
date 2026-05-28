@@ -387,18 +387,26 @@ const showVehiclePath = async (record: VehicleHistory) => {
 // 显示车辆详细信息
 const showVehicleDetails = async (record: VehicleHistory) => {
   console.log('显示车辆详情:', record);
-  // 获取车辆详细信息
-  const detail = await store.fetchVehicleDetail(record.VehicleNo);
-  
+  // 获取车辆详细信息：传入点击的具体记录，避免永远显示首条
+  const detail = await store.fetchVehicleDetail(record.VehicleNo, record);
+
   if (detail) {
-    // 弹窗显示详细信息
     let detailMessage = `车辆详细信息:\n`;
     detailMessage += `车牌号: ${detail.No}\n`;
     detailMessage += `入口: ${detail.EnterName} (${detail.EnterNo})\n`;
     detailMessage += `进入时间: ${formatDate(detail.EnterTime)}\n`;
-    detailMessage += `当前速度: ${detail.Speed} km/h\n`;
-    detailMessage += `当前位置: (${detail.Position.Pos_X}, ${detail.Position.Pos_Y})\n`;
-    
+    if (record.ExitName) {
+      detailMessage += `出口: ${record.ExitName}${record.ExitNo ? ` (${record.ExitNo})` : ''}\n`;
+    }
+    if (record.ExitTime) {
+      detailMessage += `离开时间: ${formatDate(record.ExitTime)}\n`;
+    }
+    detailMessage += `速度: ${detail.Speed} km/h\n`;
+    detailMessage += `入口位置: (${detail.Position.Pos_X}, ${detail.Position.Pos_Y})\n`;
+    if (record.Charge !== undefined) {
+      detailMessage += `费用: ¥${record.Charge}\n`;
+    }
+
     alert(detailMessage);
   } else {
     alert(`未能获取车辆 ${record.VehicleNo} 的详细信息。`);

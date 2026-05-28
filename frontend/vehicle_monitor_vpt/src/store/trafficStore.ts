@@ -19,6 +19,16 @@ export const useTrafficStore = defineStore('traffic', {
     // 所有曾经出现过的车辆 ID（包含已离开的车辆）。"统计分析"应包含历史车辆，
     // 而 fetchVehiclePositions 在车辆完全离开后会从结果中移除它们，所以必须额外维护这个集合。
     knownVehicleNos: [] as string[],
+    // 累计经过检查点次数：每次车辆从"不在 X 检查点范围内"变为"在范围内"即 +1
+    cumulativeCheckpointPasses: {} as Record<string, number>,
+    // 累计进入区域时间戳（毫秒）：每次车辆从"在区域外（0,0）或未知"变为"在区域内"记一笔
+    cumulativeEntryTimestamps: [] as number[],
+    // 上一帧每辆车是否在每个检查点范围内：用于检测进入边沿
+    _prevInCheckpoint: {} as Record<string, Record<string, boolean>>,
+    // 上一帧每辆车是否在区域内：用于检测进入区域
+    _prevInArea: {} as Record<string, boolean>,
+    // 已生成的 mock 历史缓存：按车牌固定，避免每次刷新都重新随机化时间戳
+    _mockHistoryCache: {} as Record<string, VehicleHistory[]>,
   }),
 
   actions: {
@@ -170,6 +180,9 @@ export const useTrafficStore = defineStore('traffic', {
         // 把当前帧出现的车牌持久化到 knownVehicleNos，避免后续车辆离开后丢失统计
         this.rememberVehicleNos(this.vehicles.map(v => v.No));
 
+        // 累计事件计数：基于"位置边沿"（区域边沿 / 检查点边沿）只在跨越时计数一次
+        this.updatePassageEvents();
+
         // 车辆位置更新后，自动计算拥堵度
         this.calculatePathCongestion();
         this.triggerCongestionAlerts();
@@ -178,8 +191,48 @@ export const useTrafficStore = defineStore('traffic', {
         // 如果API失败，使用本地mock数据
         this.vehicles = this.getMockVehicles();
         this.rememberVehicleNos(this.vehicles.map(v => v.No));
+        this.updatePassageEvents();
         this.calculatePathCongestion();
         this.triggerCongestionAlerts();
+      }
+    },
+
+    // 累计事件追踪：
+    // - 每辆车从"不在某检查点 50px 范围内"变为"在范围内"，该检查点 +1
+    // - 每辆车从"区域外（Pos_X=0 && Pos_Y=0）"变为"区域内"，记录一次进入时间戳
+    updatePassageEvents() {
+      const now = Date.now();
+      const isOutside = (p: { Pos_X: number; Pos_Y: number }) =>
+        p.Pos_X === 0 && p.Pos_Y === 0;
+
+      for (const v of this.vehicles) {
+        const inArea = !isOutside(v.Position);
+
+        // 进入区域边沿
+        const wasInArea = this._prevInArea[v.No] ?? false;
+        if (inArea && !wasInArea) {
+          this.cumulativeEntryTimestamps.push(now);
+        }
+        this._prevInArea[v.No] = inArea;
+
+        // 检查点进入边沿（每检查点独立追踪）
+        if (!this._prevInCheckpoint[v.No]) this._prevInCheckpoint[v.No] = {};
+        const prevMap = this._prevInCheckpoint[v.No]!;
+        for (const cp of this.checkpoints) {
+          if (!inArea) {
+            prevMap[cp.No] = false;
+            continue;
+          }
+          const dx = cp.Position.Pos_X - v.Position.Pos_X;
+          const dy = cp.Position.Pos_Y - v.Position.Pos_Y;
+          const inCp = dx * dx + dy * dy < 50 * 50;
+          const wasInCp = prevMap[cp.No] ?? false;
+          if (inCp && !wasInCp) {
+            this.cumulativeCheckpointPasses[cp.No] =
+              (this.cumulativeCheckpointPasses[cp.No] || 0) + 1;
+          }
+          prevMap[cp.No] = inCp;
+        }
       }
     },
 
@@ -195,17 +248,33 @@ export const useTrafficStore = defineStore('traffic', {
     },
 
     // 获取车辆详细信息
-    async fetchVehicleDetail(vehicleNo: string) {
+    // 如果传入 record，则把这条历史记录构造为"详情"返回（修复"始终显示首条"的问题）
+    async fetchVehicleDetail(vehicleNo: string, record?: VehicleHistory) {
+      // 优先用传入的具体记录构造详情
+      if (record) {
+        const pos = this.getCoordinatesForLocation(record.EnterName || '');
+        const detail: VehicleDetail = {
+          No: record.VehicleNo || vehicleNo,
+          EnterNo: record.EnterNo || 'N/A',
+          EnterName: record.EnterName || '未知入口',
+          EnterTime: record.EnterTime || '',
+          Speed: record.Speed ?? 0,
+          Position: pos,
+        };
+        this.vehicleDetails[vehicleNo] = detail;
+        return detail;
+      }
+
       try {
         const response = await fetch(`http://127.0.0.1:12345/getVehicleDetail?No=${vehicleNo}`);
         if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
         const data = await response.json();
-        
+
         console.log('Raw vehicle detail response:', data);
-        
+
         // 处理API返回的数据，确保是正确的格式
         let vehicleDetail: VehicleDetail | null = null;
-        
+
         if (Array.isArray(data) && data.length > 0) {
           // API返回的是数组格式，取第一个元素
           vehicleDetail = data[0] as VehicleDetail;
@@ -213,7 +282,7 @@ export const useTrafficStore = defineStore('traffic', {
           // API可能直接返回对象（虽然文档说是数组）
           vehicleDetail = data as VehicleDetail;
         }
-        
+
         if (vehicleDetail) {
           // 确保数据格式正确，如果没有必要的字段则使用默认值
           this.vehicleDetails[vehicleNo] = {
@@ -224,7 +293,7 @@ export const useTrafficStore = defineStore('traffic', {
             Speed: vehicleDetail.Speed || 0,
             Position: vehicleDetail.Position || { Pos_X: 0, Pos_Y: 0 }
           };
-          
+
           console.log('Updated vehicle details:', this.vehicleDetails[vehicleNo]);
           return this.vehicleDetails[vehicleNo];
         } else {
@@ -298,7 +367,11 @@ export const useTrafficStore = defineStore('traffic', {
     },
 
     // 为某辆车生成多样化的 mock 历史记录（用于无后端时演示/调试）
+    // 缓存按车牌固定，时间戳基于"首次生成时刻"定，避免每次刷新都让数据漂移
     getMockHistoryFor(vehicleNo: string): VehicleHistory[] {
+      const cached = this._mockHistoryCache[vehicleNo];
+      if (cached) return cached;
+
       const entryDefs = [
         { No: 'E-N', Name: '北出入口' },
         { No: 'E-S', Name: '南出入口' },
@@ -315,14 +388,17 @@ export const useTrafficStore = defineStore('traffic', {
 
       const recordCount = 3 + Math.floor(rng() * 4); // 3~6 条
       const records: VehicleHistory[] = [];
-      const now = Date.now();
+      // 关键：以"哈希出来的固定基点"代替 Date.now()，确保 mock 数据稳定
+      // 让每辆车的"最近一条进入时间"分布在过去 0~80 分钟，落在过去一小时分布的滚动窗口里
+      const baseEnterAgo = Math.floor(rng() * 80 * 60 * 1000); // 0~80 分钟前
+      const fixedNow = Date.now() - baseEnterAgo;
       for (let i = 0; i < recordCount; i++) {
         const enter = entryDefs[Math.floor(rng() * entryDefs.length)]!;
         // 25% 概率出入口一致（验证环绕路径）
         const exit = rng() < 0.25 ? enter : entryDefs[Math.floor(rng() * entryDefs.length)]!;
-        // 时间分布在过去 90 分钟内，确保"过去一小时分布"图能看到数据
-        const enterTime = now - Math.floor(rng() * 90 * 60 * 1000);
-        const stayMs = Math.floor((2 + rng() * 18) * 60 * 1000); // 2~20 分钟
+        // 在 fixedNow 之前再向前若干分钟，让多条记录形成时间序列
+        const enterTime = fixedNow - i * (10 + Math.floor(rng() * 30)) * 60 * 1000;
+        const stayMs = Math.floor((2 + rng() * 18) * 60 * 1000);
         const exitTime = enterTime + stayMs;
         records.push({
           VehicleNo: vehicleNo,
@@ -336,12 +412,12 @@ export const useTrafficStore = defineStore('traffic', {
           Speed: 40 + Math.floor(rng() * 80),
         });
       }
-      // 按进入时间升序（与 API 描述一致）
       records.sort((a, b) => {
         const ta = parseInt(a.EnterTime.match(/\d+/)?.[0] || '0', 10);
         const tb = parseInt(b.EnterTime.match(/\d+/)?.[0] || '0', 10);
         return ta - tb;
       });
+      this._mockHistoryCache[vehicleNo] = records;
       return records;
     },
 
