@@ -16,6 +16,9 @@ export const useTrafficStore = defineStore('traffic', {
     totalHistoryPages: 0, // 历史记录总页数
     selectedVehicle: null as string | null, // 当前选中的车辆
     vehiclePathToDisplay: [] as any[], // 要在地图上显示的车辆路径
+    // 所有曾经出现过的车辆 ID（包含已离开的车辆）。"统计分析"应包含历史车辆，
+    // 而 fetchVehiclePositions 在车辆完全离开后会从结果中移除它们，所以必须额外维护这个集合。
+    knownVehicleNos: [] as string[],
   }),
 
   actions: {
@@ -164,6 +167,9 @@ export const useTrafficStore = defineStore('traffic', {
           this.vehicles = data;
         }
 
+        // 把当前帧出现的车牌持久化到 knownVehicleNos，避免后续车辆离开后丢失统计
+        this.rememberVehicleNos(this.vehicles.map(v => v.No));
+
         // 车辆位置更新后，自动计算拥堵度
         this.calculatePathCongestion();
         this.triggerCongestionAlerts();
@@ -171,8 +177,20 @@ export const useTrafficStore = defineStore('traffic', {
         console.error('获取车辆位置失败:', error);
         // 如果API失败，使用本地mock数据
         this.vehicles = this.getMockVehicles();
+        this.rememberVehicleNos(this.vehicles.map(v => v.No));
         this.calculatePathCongestion();
         this.triggerCongestionAlerts();
+      }
+    },
+
+    // 记录"曾经出现过"的车牌，永不删除（统计分析需要包含已离开车辆的历史）
+    rememberVehicleNos(nos: string[]) {
+      const seen = new Set(this.knownVehicleNos);
+      for (const no of nos) {
+        if (no && !seen.has(no)) {
+          seen.add(no);
+          this.knownVehicleNos.push(no);
+        }
       }
     },
 
@@ -327,14 +345,19 @@ export const useTrafficStore = defineStore('traffic', {
       return records;
     },
 
-    // 获取所有车辆的历史信息（聚合所有当前车辆的历史，用于"未选择车辆"时统计与列表显示）
+    // 获取所有车辆的历史信息（聚合所有当前 + 曾经出现过的车辆，用于统计分析）
     async fetchAllVehiclesHistory() {
       // 先确保有车辆列表
       if (this.vehicles.length === 0) {
         await this.fetchVehiclePositions();
       }
+      // 关键：使用 knownVehicleNos 而不是当前 vehicles 列表，
+      // 这样已离开（不在当前位置接口结果中）的车辆历史也会被纳入统计
+      this.rememberVehicleNos(this.vehicles.map(v => v.No));
       const allRecords: VehicleHistory[] = [];
-      const vehicleNos = Array.from(new Set(this.vehicles.map(v => v.No)));
+      const vehicleNos = this.knownVehicleNos.length > 0
+        ? [...this.knownVehicleNos]
+        : Array.from(new Set(this.vehicles.map(v => v.No)));
       for (const no of vehicleNos) {
         let gotData = false;
         try {
