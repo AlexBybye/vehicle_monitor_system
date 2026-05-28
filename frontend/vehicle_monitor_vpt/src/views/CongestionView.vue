@@ -13,7 +13,7 @@
           :class="autoRefresh ? 'btn-success' : 'btn-primary'"
         >
           <span v-if="autoRefresh">⏸️ 停止自动刷新</span>
-          <span v-else>▶️ 自动刷新 (5s)</span>
+          <span v-else>▶️ 自动刷新 (3s)</span>
         </button>
       </div>
     </div>
@@ -208,7 +208,7 @@ const refreshOnce = () => store.fetchVehiclePositions();
 const toggleAutoRefresh = () => {
   autoRefresh.value = !autoRefresh.value;
   if (autoRefresh.value) {
-    refreshInterval = setInterval(refreshOnce, 5000);
+    refreshInterval = setInterval(refreshOnce, 3000);
   } else if (refreshInterval) {
     clearInterval(refreshInterval);
     refreshInterval = null;

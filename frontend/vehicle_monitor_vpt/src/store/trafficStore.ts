@@ -16,6 +16,15 @@ export const useTrafficStore = defineStore('traffic', {
     totalHistoryPages: 0, // 历史记录总页数
     selectedVehicle: null as string | null, // 当前选中的车辆
     vehiclePathToDisplay: [] as any[], // 要在地图上显示的车辆路径
+    // 累计进入分布（按出入口编号 -> 累计进入车辆次数）
+    // 通过对 fetchVehiclePositions 的轮询观察推断："上一帧不在区域、本帧在区域 + 距离最近的入口" 视为一次进入
+    cumulativeEntryCounts: {} as Record<string, number>,
+    // 上一帧每辆车的位置，用于推断"重新进入"
+    _prevVehiclePositions: {} as Record<string, { Pos_X: number; Pos_Y: number }>,
+    // 累计检查点经过：每个检查点经过过的车辆 ID 集合
+    cumulativeCheckpointVisits: {} as Record<string, Record<string, true>>,
+    // 每个出入口最近一段时间的进入时间戳（毫秒），用于过去一小时分布
+    recentEntryTimestamps: [] as number[],
   }),
 
   actions: {
@@ -155,7 +164,7 @@ export const useTrafficStore = defineStore('traffic', {
         const response = await fetch('http://127.0.0.1:12345/getVehiclePositions');
         if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
         const data = await response.json();
-        
+
         // 如果后端返回空数据，使用mock数据作为备用
         if (!data || data.length === 0) {
           console.warn('后端返回空数据，使用mock数据');
@@ -163,7 +172,10 @@ export const useTrafficStore = defineStore('traffic', {
         } else {
           this.vehicles = data;
         }
-        
+
+        // 累计统计：基于本帧 vs 上一帧的位置变化
+        this.updateCumulativeCounters();
+
         // 车辆位置更新后，自动计算拥堵度
         this.calculatePathCongestion();
         this.triggerCongestionAlerts();
@@ -171,9 +183,62 @@ export const useTrafficStore = defineStore('traffic', {
         console.error('获取车辆位置失败:', error);
         // 如果API失败，使用本地mock数据
         this.vehicles = this.getMockVehicles();
+        this.updateCumulativeCounters();
         this.calculatePathCongestion();
         this.triggerCongestionAlerts();
       }
+    },
+
+    // 累计计数：检测"刚进入"的车辆并归属到最近的出入口；同时累计经过检查点
+    updateCumulativeCounters() {
+      const now = Date.now();
+      const isOutside = (p: { Pos_X: number; Pos_Y: number }) =>
+        p.Pos_X === 0 && p.Pos_Y === 0;
+
+      this.vehicles.forEach(v => {
+        const prev = this._prevVehiclePositions[v.No];
+        const wasOutside = !prev || isOutside(prev);
+        const isInside = !isOutside(v.Position);
+
+        // 进入区域：上一帧无记录或在区域外，本帧在区域内
+        if (wasOutside && isInside && this.entries.length > 0) {
+          let nearestEntry = this.entries[0]!;
+          let minDist = Infinity;
+          for (const e of this.entries) {
+            const dx = e.Position.Pos_X - v.Position.Pos_X;
+            const dy = e.Position.Pos_Y - v.Position.Pos_Y;
+            const d = dx * dx + dy * dy;
+            if (d < minDist) {
+              minDist = d;
+              nearestEntry = e;
+            }
+          }
+          this.cumulativeEntryCounts[nearestEntry.No] =
+            (this.cumulativeEntryCounts[nearestEntry.No] || 0) + 1;
+          this.recentEntryTimestamps.push(now);
+        }
+
+        // 累计经过检查点：当前距离 < 50 即记录该车辆经过该检查点（按车辆 ID 去重）
+        if (isInside) {
+          this.checkpoints.forEach(cp => {
+            const dx = cp.Position.Pos_X - v.Position.Pos_X;
+            const dy = cp.Position.Pos_Y - v.Position.Pos_Y;
+            if (dx * dx + dy * dy < 50 * 50) {
+              if (!this.cumulativeCheckpointVisits[cp.No]) {
+                this.cumulativeCheckpointVisits[cp.No] = {};
+              }
+              this.cumulativeCheckpointVisits[cp.No]![v.No] = true;
+            }
+          });
+        }
+
+        // 更新上一帧位置
+        this._prevVehiclePositions[v.No] = { ...v.Position };
+      });
+
+      // 仅保留过去一小时的进入时间戳
+      const oneHourAgo = now - 60 * 60 * 1000;
+      this.recentEntryTimestamps = this.recentEntryTimestamps.filter(t => t >= oneHourAgo);
     },
 
     // 获取车辆详细信息
@@ -288,6 +353,35 @@ export const useTrafficStore = defineStore('traffic', {
         this.totalHistoryPages = 1;
         return this.historyRecords;
       }
+    },
+
+    // 获取所有车辆的历史信息（聚合所有当前车辆的历史，用于"未选择车辆"时统计与列表显示）
+    async fetchAllVehiclesHistory() {
+      // 先确保有车辆列表
+      if (this.vehicles.length === 0) {
+        await this.fetchVehiclePositions();
+      }
+      const allRecords: VehicleHistory[] = [];
+      const vehicleNos = Array.from(new Set(this.vehicles.map(v => v.No)));
+      for (const no of vehicleNos) {
+        try {
+          let page = 1;
+          let hasMore = true;
+          while (hasMore) {
+            const response = await fetch(`http://127.0.0.1:12345/getVehiclesHistory?No=${no}&Page=${page}`);
+            if (!response.ok) break;
+            const pageData: VehicleHistory[] = await response.json();
+            if (!pageData || pageData.length === 0) break;
+            allRecords.push(...pageData);
+            if (pageData.length < 5) hasMore = false;
+            else page++;
+          }
+        } catch (e) {
+          console.warn(`获取车辆 ${no} 历史失败`, e);
+        }
+      }
+      this.historyRecords = allRecords;
+      return allRecords;
     },
 
     // 按车牌号汇总车辆费用
@@ -792,16 +886,25 @@ export const useTrafficStore = defineStore('traffic', {
     },
     
     // 获取车辆轨迹用于回放
-    async getVehiclePathForPlayback(vehicleNo: string) {
+    // 如果传入 record，则基于这条具体记录构建轨迹（修复"永远只显示第一条"的问题）；
+    // 否则获取车辆历史并使用首条记录。
+    async getVehiclePathForPlayback(vehicleNo: string, record?: VehicleHistory) {
       try {
-        // 首先获取车辆历史记录
-        await this.fetchVehiclesHistory(vehicleNo, 1);
-        
-        // 从历史记录中提取车辆的轨迹信息
-        const records = this.historyRecords.filter(record => record.VehicleNo === vehicleNo);
-        
-        if (records.length === 0) {
-          // 如果历史记录为空，尝试获取车辆实时位置作为轨迹点
+        let targetRecord: VehicleHistory | undefined = record;
+
+        if (!targetRecord) {
+          // 没有指定记录：尝试从已加载的历史中找一条该车辆的记录
+          targetRecord = this.historyRecords.find(r => r.VehicleNo === vehicleNo);
+        }
+
+        if (!targetRecord) {
+          // 仍然没有：拉取该车辆的历史
+          await this.fetchVehiclesHistory(vehicleNo, 1);
+          targetRecord = this.historyRecords.find(r => r.VehicleNo === vehicleNo);
+        }
+
+        if (!targetRecord) {
+          // 历史为空：尝试以当前位置生成单点轨迹
           await this.fetchVehiclePositions();
           const currentVehicle = this.vehicles.find(v => v.No === vehicleNo);
           if (currentVehicle && (currentVehicle.Position.Pos_X !== 0 || currentVehicle.Position.Pos_Y !== 0)) {
@@ -817,46 +920,30 @@ export const useTrafficStore = defineStore('traffic', {
           }
           return [];
         }
-        
-        // 创建轨迹，根据出入口是否一致来决定路径
+
+        const enterName = targetRecord.EnterName || '未知入口';
+        const exitName = targetRecord.ExitName || enterName;
+
+        let realPath;
+        if (enterName === exitName) {
+          realPath = this.createCircularPath(enterName);
+        } else {
+          realPath = this.buildRealisticPath(enterName, exitName);
+        }
+
         const pathData = [];
-
-        // 只使用第一条历史记录
-        if (records.length > 0) {
-          const record = records[0];
-
-          if (!record) return [];
-
-          const enterName = record.EnterName || '未知入口';
-          const exitName = record.ExitName || enterName;
-
-          let realPath;
-          if (enterName === exitName) {
-            // 出入口一致，环绕一周路径
-            realPath = this.createCircularPath(enterName);
-          } else {
-            // 出入口不一致，选择最短路径
-            realPath = this.buildRealisticPath(enterName, exitName);
-          }
-
-          // 输出全部插值点，保留路径折线形状；不再做粗暴的等距抽样
-          // （此前 maxPoints=10 抽样会跨越路径拐角，导致轨迹"穿墙"看起来不沿路）
-          for (let j = 0; j < realPath.length; j++) {
-            const point = realPath[j];
-            if (!point) continue;
-            pathData.push({
-              id: `${record.VehicleNo}-path-0-${j}`,
-              vehicleNo: record.VehicleNo || vehicleNo,
-              time: record.EnterTime || new Date().toISOString(),
-              position: {
-                Pos_X: point.x,
-                Pos_Y: point.y,
-              },
-              speed: record.Speed || 0,
-              enterName: enterName,
-              exitName: exitName,
-            });
-          }
+        for (let j = 0; j < realPath.length; j++) {
+          const point = realPath[j];
+          if (!point) continue;
+          pathData.push({
+            id: `${targetRecord.VehicleNo}-path-${j}`,
+            vehicleNo: targetRecord.VehicleNo || vehicleNo,
+            time: targetRecord.EnterTime || new Date().toISOString(),
+            position: { Pos_X: point.x, Pos_Y: point.y },
+            speed: targetRecord.Speed || 0,
+            enterName,
+            exitName,
+          });
         }
 
         return pathData;
@@ -1097,7 +1184,8 @@ export const useTrafficStore = defineStore('traffic', {
     },
     
     // 创建环绕路径（当出入口一致时使用）
-    // 在与 buildRealisticPath 相同的有向道路图上，找一条经过最少节点的"回到起点"闭合路径
+    // 在与 buildRealisticPath 相同的有向道路图上，找一条经过"所有检查站"再回到起点的闭合路径
+    // （不允许直接折返：必须遍历检查站 1~6 再回起点）
     createCircularPath(locationName: string): {x: number, y: number}[] {
       const nodes: Record<string, {x: number, y: number}> = {
         '西出入口': {x: 0, y: 400},
@@ -1139,38 +1227,51 @@ export const useTrafficStore = defineStore('traffic', {
         '中间点-顶部': ['北出入口', '检查站 1'],
       };
 
-      // 起点不在图上：返回单点（极少出现）
+      // 起点不在图上：返回单点
       if (!nodes[locationName] || !roadNetwork[locationName]) {
         const pos = nodes[locationName];
         return pos ? [{ x: pos.x, y: pos.y }] : [];
       }
 
-      // BFS：从起点出发，找最少边数的回到起点的回路
-      // 状态键带"是否已离开起点"标志，避免 0 步即完成
-      type Crumb = { node: string; left: boolean; prev: string | null; prevLeft: boolean };
+      // 6 个检查站，全部访问后才能回到起点
+      const checkpointList = ['检查站 1', '检查站 2', '检查站 3', '检查站 4', '检查站 5', '检查站 6'];
+      const checkpointIndex: Record<string, number> = {};
+      checkpointList.forEach((c, i) => { checkpointIndex[c] = i; });
+      const fullMask = (1 << checkpointList.length) - 1;
+
+      // BFS over (node, visitedMask, left) — 找最短经过所有检查站的回路
+      type Crumb = { prevKey: string | null; node: string };
       const visited = new Map<string, Crumb>();
-      const startKey = `${locationName}|0`;
-      visited.set(startKey, { node: locationName, left: false, prev: null, prevLeft: false });
-      const queue: Array<{ node: string; left: boolean }> = [{ node: locationName, left: false }];
+      const startMask = checkpointIndex[locationName] !== undefined
+        ? (1 << checkpointIndex[locationName]!)
+        : 0;
+      const startKey = `${locationName}|${startMask}|0`;
+      visited.set(startKey, { prevKey: null, node: locationName });
+      const queue: Array<{ node: string; mask: number; left: number; key: string }> = [
+        { node: locationName, mask: startMask, left: 0, key: startKey },
+      ];
 
       let foundKey: string | null = null;
       while (queue.length) {
         const cur = queue.shift()!;
         const neighbors = roadNetwork[cur.node] || [];
         for (const nb of neighbors) {
-          const nbLeft = cur.left || nb !== locationName;
-          if (nb === locationName && cur.left) {
-            const key = `${nb}|done`;
+          const nextLeft = cur.left || nb !== locationName ? 1 : 0;
+          const nextMask = checkpointIndex[nb] !== undefined
+            ? cur.mask | (1 << checkpointIndex[nb]!)
+            : cur.mask;
+          if (nb === locationName && cur.left && cur.mask === fullMask) {
+            const key = `${nb}|${nextMask}|done`;
             if (!visited.has(key)) {
-              visited.set(key, { node: nb, left: true, prev: cur.node, prevLeft: cur.left });
+              visited.set(key, { prevKey: cur.key, node: nb });
               foundKey = key;
             }
             break;
           }
-          const key = `${nb}|${nbLeft ? 1 : 0}`;
+          const key = `${nb}|${nextMask}|${nextLeft}`;
           if (!visited.has(key)) {
-            visited.set(key, { node: nb, left: nbLeft, prev: cur.node, prevLeft: cur.left });
-            queue.push({ node: nb, left: nbLeft });
+            visited.set(key, { prevKey: cur.key, node: nb });
+            queue.push({ node: nb, mask: nextMask, left: nextLeft, key });
           }
         }
         if (foundKey) break;
@@ -1179,16 +1280,16 @@ export const useTrafficStore = defineStore('traffic', {
       // 回溯回路
       const route: string[] = [];
       if (foundKey) {
-        let crumb = visited.get(foundKey);
-        route.push(locationName); // 终点
-        while (crumb && crumb.prev !== null) {
-          route.push(crumb.prev);
-          const prevKey = `${crumb.prev}|${crumb.prevLeft ? 1 : 0}`;
-          crumb = visited.get(prevKey);
+        let key: string | null = foundKey;
+        while (key) {
+          const crumb = visited.get(key);
+          if (!crumb) break;
+          route.push(crumb.node);
+          key = crumb.prevKey;
         }
         route.reverse();
       } else {
-        // 找不到回路，至少返回起点
+        // 没找到（理论不会发生），退化为返回单点
         route.push(locationName);
       }
 

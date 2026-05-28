@@ -5,10 +5,20 @@
         <h2 class="title">📊 统计分析</h2>
         <p class="subtitle">实时综合指标 · 来自当前监控系统</p>
       </div>
-      <button @click="refreshAll" class="btn btn-primary" :disabled="loading">
-        <span v-if="loading">🔄 加载中…</span>
-        <span v-else>🔄 刷新</span>
-      </button>
+      <div class="header-actions">
+        <button @click="refreshAll" class="btn btn-primary" :disabled="loading">
+          <span v-if="loading">🔄 加载中…</span>
+          <span v-else>🔄 刷新</span>
+        </button>
+        <button
+          @click="toggleAutoRefresh"
+          class="btn"
+          :class="autoRefresh ? 'btn-success' : 'btn-secondary'"
+        >
+          <span v-if="autoRefresh">⏸️ 停止自动刷新</span>
+          <span v-else>▶️ 自动刷新 (3s)</span>
+        </button>
+      </div>
     </div>
 
     <div class="stats-overview">
@@ -58,24 +68,35 @@
     <div class="charts-grid">
       <div class="chart-section card">
         <div class="chart-header">
-          <h3>🚪 各出入口通行总数</h3>
-          <span class="chart-tag">实时 · 来自 getStatisticsByEntry</span>
+          <h3>🚪 各出入口累计通行车辆数</h3>
+          <span class="chart-tag">累计 · 同一辆车再次出现+1</span>
         </div>
         <ChartPanel :data="entryFlowData" chart-type="bar" title="" />
       </div>
 
       <div class="chart-section card">
         <div class="chart-header">
-          <h3>🕐 各小时进入分布</h3>
-          <span class="chart-tag">已加载历史 · 今日</span>
+          <h3>🕐 过去一小时进入分布（每 5 分钟）</h3>
+          <span class="chart-tag">实时 · 滚动窗口</span>
         </div>
-        <ChartPanel :data="hourlyFlowData" chart-type="line" title="" />
+        <ChartPanel :data="pastHourFlowData" chart-type="line" title="" />
       </div>
 
       <div class="chart-section card chart-section--full">
         <div class="chart-header">
           <h3>🛣️ 各检查点车辆数分布</h3>
-          <span class="chart-tag">实时 · 半径 50px</span>
+          <div class="chart-toggle">
+            <button
+              class="toggle-btn"
+              :class="{ active: checkpointMode === 'realtime' }"
+              @click="checkpointMode = 'realtime'"
+            >实时</button>
+            <button
+              class="toggle-btn"
+              :class="{ active: checkpointMode === 'cumulative' }"
+              @click="checkpointMode = 'cumulative'"
+            >累计</button>
+          </div>
         </div>
         <ChartPanel :data="checkpointDistribution" chart-type="pie" title="" />
       </div>
@@ -84,13 +105,17 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue';
+import { ref, onMounted, onUnmounted, computed } from 'vue';
 import { useTrafficStore } from '@/store/trafficStore';
 import ChartPanel from '@/components/ChartPanel.vue';
-import { formatDate } from '@/utils';
 
 const store = useTrafficStore();
 const loading = ref(false);
+const autoRefresh = ref(false);
+let refreshInterval: ReturnType<typeof setInterval> | null = null;
+
+// 检查点分布显示模式：实时 / 累计
+const checkpointMode = ref<'realtime' | 'cumulative'>('realtime');
 
 // 真数据：活动车辆 / 离开车辆
 const totalVehicles = computed(() => store.vehicles.length);
@@ -146,31 +171,39 @@ const heavyCongestionCount = computed(() =>
     .length
 );
 
-// 出入口流量：用真实接口 getStatisticsByEntry 拉取每个出入口的进+出
-const entryStats = ref<Record<string, { Enter: number; Exit: number }>>({});
+// 出入口累计车辆数：用 store 维护的累计计数（同一辆车再次出现也 +1）
 const entryFlowData = computed(() => {
-  return store.entries.map(e => {
-    const s = entryStats.value[e.No];
-    const total = s ? (s.Enter || 0) + (s.Exit || 0) : 0;
-    return { label: e.Name, value: total };
+  return store.entries.map(e => ({
+    label: e.Name,
+    value: store.cumulativeEntryCounts[e.No] || 0,
+  }));
+});
+
+// 过去一小时每 5 分钟进入分布（12 个桶，按当前时间向前推 60 分钟）
+const pastHourFlowData = computed(() => {
+  const now = Date.now();
+  const buckets = Array(12).fill(0);
+  for (const t of store.recentEntryTimestamps) {
+    const diffMs = now - t;
+    if (diffMs < 0 || diffMs > 60 * 60 * 1000) continue;
+    const idx = 11 - Math.floor(diffMs / (5 * 60 * 1000));
+    if (idx >= 0 && idx < 12) buckets[idx]++;
+  }
+  return buckets.map((v, i) => {
+    const minsAgo = (11 - i) * 5;
+    const label = minsAgo === 0 ? '现在' : `-${minsAgo}m`;
+    return { label, value: v };
   });
 });
 
-// 各小时进入分布：基于已加载历史
-const hourlyFlowData = computed(() => {
-  const buckets = Array(24).fill(0);
-  for (const r of store.historyRecords) {
-    const t = parseDotNetTime(r.EnterTime);
-    if (t === null) continue;
-    const h = new Date(t).getHours();
-    if (h >= 0 && h < 24) buckets[h]++;
-  }
-  return buckets.map((v, i) => ({ label: `${i}时`, value: v }));
-});
-
-// 检查点拥堵分布：用 store.pathCongestion 里 checkpoint-* 的 vehicleCount
+// 检查点分布：实时（store.pathCongestion 当前车辆数）/ 累计（去重车辆数）
 const checkpointDistribution = computed(() =>
   store.checkpoints.map(c => {
+    if (checkpointMode.value === 'cumulative') {
+      const visits = store.cumulativeCheckpointVisits[c.No];
+      const count = visits ? Object.keys(visits).length : 0;
+      return { label: c.Name, value: count };
+    }
     const seg = store.pathCongestion[`checkpoint-${c.No}`];
     return { label: c.Name, value: seg?.vehicleCount ?? 0 };
   })
@@ -184,22 +217,32 @@ const refreshAll = async () => {
       store.fetchCheckpoints(),
       store.fetchVehiclePositions(),
     ]);
-    // 拉每个出入口的真实统计
-    const results = await Promise.all(
-      store.entries.map(async e => [e.No, await store.fetchStatisticsByEntry(e.No)] as const)
-    );
-    const next: Record<string, { Enter: number; Exit: number }> = {};
-    for (const [no, s] of results) {
-      next[no] = s as { Enter: number; Exit: number };
-    }
-    entryStats.value = next;
   } finally {
     loading.value = false;
   }
 };
 
-onMounted(() => {
-  refreshAll();
+const toggleAutoRefresh = () => {
+  autoRefresh.value = !autoRefresh.value;
+  if (autoRefresh.value) {
+    refreshInterval = setInterval(() => {
+      // 仅刷新车辆位置即可累计统计；不重复拉取出入口/检查点的静态数据
+      store.fetchVehiclePositions();
+    }, 3000);
+  } else if (refreshInterval) {
+    clearInterval(refreshInterval);
+    refreshInterval = null;
+  }
+};
+
+onMounted(async () => {
+  await refreshAll();
+  // 默认开启 3s 自动刷新
+  if (!autoRefresh.value) toggleAutoRefresh();
+});
+
+onUnmounted(() => {
+  if (refreshInterval) clearInterval(refreshInterval);
 });
 </script>
 
@@ -255,6 +298,25 @@ onMounted(() => {
   transform: translateY(-1px);
   box-shadow: var(--shadow-md);
 }
+.btn-secondary { background: var(--gray-200); color: var(--gray-800); }
+.btn-secondary:hover:not(:disabled) { transform: translateY(-1px); box-shadow: var(--shadow-md); }
+.btn-success { background: linear-gradient(135deg, #22c55e, #16a34a); color: white; }
+.btn-success:hover:not(:disabled) { transform: translateY(-1px); box-shadow: var(--shadow-md); }
+
+.header-actions { display: flex; gap: 0.5rem; }
+
+.chart-toggle { display: inline-flex; gap: 0.25rem; background: var(--gray-100); padding: 0.2rem; border-radius: var(--radius-full); }
+.toggle-btn {
+  padding: 0.3rem 0.85rem;
+  border: none;
+  background: transparent;
+  border-radius: var(--radius-full);
+  font-size: 0.8rem;
+  color: var(--gray-600);
+  cursor: pointer;
+  transition: var(--transition-normal);
+}
+.toggle-btn.active { background: white; color: var(--primary-color); box-shadow: var(--shadow-sm); font-weight: 600; }
 
 .stats-overview {
   display: grid;

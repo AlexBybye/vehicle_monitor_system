@@ -153,7 +153,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue';
+import { ref, computed, watch, onMounted } from 'vue';
 import { useTrafficStore } from '@/store/trafficStore';
 import SearchBar from '@/components/SearchBar.vue';
 import { formatDate } from '@/utils';
@@ -171,6 +171,20 @@ const manualVehicleNo = ref('');
 const currentPage = ref(1);
 const pageSize = ref(10);
 const hoveredVehicle = ref<VehicleHistory | null>(null);
+
+// 存储原始历史记录
+const originalHistoryRecords = ref<VehicleHistory[]>([]);
+
+// 初始化：未选择车辆时，加载所有车辆的历史，提供"总计/平均/最高"基准数据
+onMounted(async () => {
+  if (store.vehicles.length === 0) {
+    await store.fetchVehiclePositions();
+  }
+  if (store.historyRecords.length === 0) {
+    await store.fetchAllVehiclesHistory();
+    originalHistoryRecords.value = [...store.historyRecords];
+  }
+});
 
 // 搜索处理（保留原有功能）
 const handleSearch = async (query: string) => {
@@ -208,8 +222,7 @@ const validateDateRange = () => {
   return true;
 };
 
-// 存储原始历史记录
-const originalHistoryRecords = ref<VehicleHistory[]>([]);
+// 存储原始历史记录（已在文件顶部声明）
 
 // 按日期筛选
 const filterByDate = async () => {
@@ -349,23 +362,16 @@ const selectedVehiclePath = ref<any[]>([]);
 // 显示车辆路径
 const showVehiclePath = async (record: VehicleHistory) => {
   console.log('显示车辆路径:', record);
-  // 获取车辆轨迹数据
-  const pathData = await store.getVehiclePathForPlayback(record.VehicleNo);
+  // 关键：传入具体记录，避免永远使用首条历史的轨迹
+  const pathData = await store.getVehiclePathForPlayback(record.VehicleNo, record);
   console.log('车辆轨迹数据:', pathData);
-  
-  // 存储路径数据以便在地图组件中使用
+
   selectedVehiclePath.value = pathData;
-  
-  // 通知地图组件显示特定车辆的路径
-  // 我们可以通过store添加一个新属性来存储要显示的路径
   store.setVehiclePathToDisplay(pathData);
-  
-  // 切换到地图视图（如果存在路由）或者通知地图组件显示路径
-  // 如果当前就在地图视图中，直接触发地图重绘
+
   if (pathData.length > 0) {
-    // 在控制台输出提示信息，实际应用中可以跳转到地图视图
     console.log(`车辆 ${record.VehicleNo} 的路径已发送到地图组件显示`);
-    alert(`已准备显示车辆 ${record.VehicleNo} 的路径\n轨迹点数量: ${pathData.length}\n请切换到地图视图查看路径`);
+    alert(`已准备显示车辆 ${record.VehicleNo} 的路径\n入口: ${record.EnterName} → 出口: ${record.ExitName || '未离开'}\n轨迹点数量: ${pathData.length}\n请切换到地图视图查看路径`);
   } else {
     alert(`未能获取车辆 ${record.VehicleNo} 的轨迹数据。`);
   }
