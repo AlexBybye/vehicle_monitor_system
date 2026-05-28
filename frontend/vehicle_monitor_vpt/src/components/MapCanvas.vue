@@ -230,6 +230,8 @@ const closeVehicleInfo = () => {
 const vehicleDetailUpdateInterval = ref<number | null>(null);
 
 // 监听选中车辆变化，获取详细信息
+// 注意：地图点击只负责"显示车辆详细信息"，不再附带显示历史路线；
+// 历史路线由 HistoryView 的"📍 轨迹"按钮单独控制。
 watch(() => store.selectedVehicle, async (newVal) => {
   // 清除之前的选择的车辆的定时更新
   if (vehicleDetailUpdateInterval.value) {
@@ -242,15 +244,7 @@ watch(() => store.selectedVehicle, async (newVal) => {
       const detail = await store.fetchVehicleDetail(newVal);
       console.log('Fetch result:', detail);
 
-      // 路径只在选择变化时计算一次（基于历史记录的入/出口推算）
-      try {
-        const pathData = await store.getVehiclePathForPlayback(newVal);
-        store.setVehiclePathToDisplay(pathData);
-      } catch (pathError) {
-        console.error('Error getting vehicle path:', pathError);
-      }
-
-      // 后续仅每秒刷新 detail 与位置；不重复请求路径，避免与 HistoryView 写入竞争
+      // 后续仅每秒刷新 detail 与位置；不再触发路径计算
       vehicleDetailUpdateInterval.value = setInterval(async () => {
         if (!store.selectedVehicle) {
           if (vehicleDetailUpdateInterval.value) {
@@ -273,8 +267,7 @@ watch(() => store.selectedVehicle, async (newVal) => {
       console.error('Error fetching vehicle detail:', error);
     }
   } else {
-    // 取消选择车辆：清空路径与计时器
-    store.setVehiclePathToDisplay([]);
+    // 取消选择车辆：仅停止详情计时器；不再清空路径，路径由 HistoryView 独立管理
     if (vehicleDetailUpdateInterval.value) {
       clearInterval(vehicleDetailUpdateInterval.value);
       vehicleDetailUpdateInterval.value = null;

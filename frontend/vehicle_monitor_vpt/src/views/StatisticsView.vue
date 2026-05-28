@@ -28,7 +28,7 @@
           <h3 class="stat-title">区域内活动车辆</h3>
         </div>
         <p class="stat-number">{{ activeVehicles }}</p>
-        <p class="stat-sub">总记录 {{ totalVehicles }} 辆，已离开 {{ leftVehicles }} 辆</p>
+        <p class="stat-sub">总记录 {{ speedSampleSize}} 辆</p>
       </div>
 
       <div class="stat-card card stat-card--success">
@@ -69,7 +69,6 @@
       <div class="chart-section card">
         <div class="chart-header">
           <h3>🚪 各出入口累计通行车辆数</h3>
-          <span class="chart-tag">累计 · 同一辆车再次出现+1</span>
         </div>
         <ChartPanel :data="entryFlowData" chart-type="bar" title="" />
       </div>
@@ -77,7 +76,6 @@
       <div class="chart-section card">
         <div class="chart-header">
           <h3>🕐 过去一小时进入分布（每 5 分钟）</h3>
-          <span class="chart-tag">实时 · 滚动窗口</span>
         </div>
         <ChartPanel :data="pastHourFlowData" chart-type="line" title="" />
       </div>
@@ -185,12 +183,14 @@ const entryFlowData = computed(() => {
   }));
 });
 
-// 过去一小时每 5 分钟进入分布：基于"进入区域"事件流（每次车辆从区域外->区域内 +1）
-// 用真实事件时间戳分桶，5 分钟前及以外的桶不会因为刷新而变动
+// 过去一小时每 5 分钟进入分布：从历史记录的 EnterTime 派生
+// 把 (now - 1h, now] 区间内的记录按 5 分钟一桶分到 12 个桶
 const pastHourFlowData = computed(() => {
   const now = Date.now();
   const buckets = Array(12).fill(0);
-  for (const t of store.cumulativeEntryTimestamps) {
+  for (const r of store.historyRecords) {
+    const t = parseDotNetTime(r.EnterTime);
+    if (t === null) continue;
     const diffMs = now - t;
     if (diffMs < 0 || diffMs > 60 * 60 * 1000) continue;
     const idx = 11 - Math.floor(diffMs / (5 * 60 * 1000));
