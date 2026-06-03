@@ -254,19 +254,24 @@ const entryApiFlowData = computed(() => {
   return out;
 });
 
+// 拉取一轮统计所需的全部数据源（供手动刷新与自动刷新复用）
+const refreshData = async () => {
+  await Promise.all([
+    store.fetchEntries(),
+    store.fetchCheckpoints(),
+    store.fetchVehiclePositions(),
+  ]);
+  // 拉取所有车辆历史 - 累计统计与过去一小时分布的数据源
+  await store.fetchAllVehiclesHistory();
+  // 接口统计：累计费用 + 各出入口进出
+  totalCharge.value = await store.fetchTotalChargeStatistics();
+  entryApiStats.value = await store.fetchAllEntryStatistics();
+};
+
 const refreshAll = async () => {
   loading.value = true;
   try {
-    await Promise.all([
-      store.fetchEntries(),
-      store.fetchCheckpoints(),
-      store.fetchVehiclePositions(),
-    ]);
-    // 拉取所有车辆历史 - 累计统计与过去一小时分布的数据源
-    await store.fetchAllVehiclesHistory();
-    // 接口统计：累计费用 + 各出入口进出
-    totalCharge.value = await store.fetchTotalChargeStatistics();
-    entryApiStats.value = await store.fetchAllEntryStatistics();
+    await refreshData();
   } finally {
     loading.value = false;
   }
@@ -275,10 +280,8 @@ const refreshAll = async () => {
 const toggleAutoRefresh = () => {
   autoRefresh.value = !autoRefresh.value;
   if (autoRefresh.value) {
-    refreshInterval = setInterval(() => {
-      store.fetchVehiclePositions();
-      store.fetchAllVehiclesHistory();
-    }, 3000);
+    // 自动刷新与手动刷新走同一函数，确保累计费用 / 各出入口进出也随之更新
+    refreshInterval = setInterval(refreshData, 3000);
   } else if (refreshInterval) {
     clearInterval(refreshInterval);
     refreshInterval = null;

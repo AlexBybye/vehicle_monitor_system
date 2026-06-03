@@ -2,76 +2,73 @@
   <div class="history-view">
     <div class="view-header">
       <h2 class="title">📋 历史记录查询</h2>
-      <SearchBar @search="handleSearch" />
     </div>
-    
-    <div class="controls card">
-      <div class="query-options">
-        <div class="vehicle-selector">
-          <label class="input-label">🚗 方式一:选择现运行车辆:</label>
-          <select v-model="selectedVehicleNo" @change="loadVehicleHistory" class="input-field">
-            <option value="">请选择车辆</option>
-            <option v-for="vehicle in store.vehicles" :key="vehicle.No" :value="vehicle.No">
-              {{ vehicle.No }} ({{ vehicle.Position.Pos_X }}, {{ vehicle.Position.Pos_Y }})
-            </option>
-          </select>
-        </div>
+    <div class="query-options">
+      <div class="vehicle-selector">
+        <label class="input-label">🚗 方式一:选择现运行车辆:</label>
+        <select v-model="selectedVehicleNo" @change="loadVehicleHistory" class="input-field">
+          <option value="">请选择车辆</option>
+          <option v-for="vehicle in store.vehicles" :key="vehicle.No" :value="vehicle.No">
+            {{ vehicle.No }} ({{ vehicle.Position.Pos_X }}, {{ vehicle.Position.Pos_Y }})
+          </option>
+        </select>
+      </div>
         
-        <div class="manual-search">
-          <label class="input-label">🔍 方式二:手动输入车牌号:</label>
-          <div class="search-input-wrapper">
-            <input 
-              v-model="manualVehicleNo" 
-              type="text" 
-              placeholder="请输入车牌号" 
-              class="input-field"
-              @keyup.enter="handleManualSearch"
-            />
-            <button @click="handleManualSearch" class="btn btn-primary">
-              搜索
-            </button>
-          </div>
+      <div class="manual-search">
+        <label class="input-label">🔍 方式二:手动输入车牌号:</label>
+        <div class="search-input-wrapper">
+          <input 
+            v-model="manualVehicleNo" 
+            type="text" 
+            placeholder="请输入车牌号" 
+            class="input-field"
+            @keyup.enter="handleManualSearch"
+          />
+          <button @click="handleManualSearch" class="btn btn-primary">
+            搜索
+          </button>
         </div>
       </div>
+    </div>
       
-      <div class="date-range-controls">
-        <div class="date-time-range">
-          <div class="datetime-group">
-            <label class="input-label">📅 起始时间:</label>
-            <div class="datetime-inputs">
-              <input type="date" v-model="startDate" class="input-field" @change="validateDateRange">
-              <input type="time" v-model="startTime" class="input-field" @change="validateDateRange">
-              <span v-if="dateRangeError" class="error-message">{{ dateRangeError }}</span>
-            </div>
-          </div>
-          <div class="datetime-group">
-            <label class="input-label">🔚 结束时间:</label>
-            <div class="datetime-inputs">
-              <input type="date" v-model="endDate" class="input-field" @change="validateDateRange">
-              <input type="time" v-model="endTime" class="input-field" @change="validateDateRange">
-            </div>
-          </div>
-          <div class="datetime-actions">
-            <button @click="filterByDate" class="btn btn-primary datetime-filter-btn" :disabled="!!dateRangeError">
-              📅 按时间筛选
-            </button>
-            <button @click="clearDateFilter" class="btn btn-secondary datetime-clear-btn">
-              🗑️ 清空筛选
-            </button>
+    <div class="date-range-controls">
+      <div class="date-time-range">
+        <div class="datetime-group">
+          <label class="input-label">📅 起始时间:</label>
+          <div class="datetime-inputs">
+            <input type="date" v-model="startDate" class="input-field" @change="validateDateRange">
+            <input type="time" v-model="startTime" class="input-field" @change="validateDateRange">
+            <span v-if="dateRangeError" class="error-message">{{ dateRangeError }}</span>
           </div>
         </div>
-        
-        <div class="actions">
-          <button @click="handleExportToCSV" class="btn btn-success btn-full-width">
-            📥 导出CSV
+        <div class="datetime-group">
+          <label class="input-label">🔚 结束时间:</label>
+          <div class="datetime-inputs">
+            <input type="date" v-model="endDate" class="input-field" @change="validateDateRange">
+            <input type="time" v-model="endTime" class="input-field" @change="validateDateRange">
+          </div>
+        </div>
+        <div class="datetime-actions">
+          <button @click="filterByDate" class="btn btn-primary datetime-filter-btn" :disabled="!!dateRangeError">
+            📅 按时间筛选
           </button>
-          <button @click="handleExportToJSON" class="btn btn-info btn-full-width">
-            📄 导出JSON
+          <button @click="clearDateFilter" class="btn btn-secondary datetime-clear-btn">
+            🗑️ 清空筛选
           </button>
         </div>
       </div>
+        
+      <div class="actions">
+        <button @click="handleExportToCSV" class="btn btn-success btn-full-width">
+          📥 导出CSV
+        </button>
+        <button @click="handleExportToJSON" class="btn btn-info btn-full-width">
+          📄 导出JSON
+        </button>
+      </div>
     </div>
-    
+  </div>
+
     <div class="results card">
       <div class="stats-grid">
         <div class="stat-card">
@@ -149,7 +146,6 @@
         </button>
       </div>
     </div>
-  </div>
 </template>
 
 <script setup lang="ts">
