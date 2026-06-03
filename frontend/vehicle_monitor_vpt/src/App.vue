@@ -1,5 +1,28 @@
 <script setup lang="ts">
+import { ref, onMounted } from 'vue'
 import { RouterLink, RouterView } from 'vue-router'
+
+// 主题切换：白天 / 夜间，持久化到 localStorage，并写入 <html data-theme>
+const isDark = ref(false)
+
+const applyTheme = () => {
+  document.documentElement.setAttribute('data-theme', isDark.value ? 'dark' : 'light')
+}
+
+const toggleTheme = () => {
+  isDark.value = !isDark.value
+  localStorage.setItem('vms-theme', isDark.value ? 'dark' : 'light')
+  applyTheme()
+}
+
+onMounted(() => {
+  const saved = localStorage.getItem('vms-theme')
+  // 优先读取已保存偏好，否则跟随系统暗色偏好
+  isDark.value = saved
+    ? saved === 'dark'
+    : window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? false
+  applyTheme()
+})
 </script>
 
 <template>
@@ -30,13 +53,16 @@ import { RouterLink, RouterView } from 'vue-router'
         >
           📊 统计分析
         </RouterLink>
-        <RouterLink 
-          to="/congestion" 
+        <RouterLink
+          to="/congestion"
           class="nav-link gradient-bg"
           :class="$route.path === '/congestion' ? 'active' : ''"
         >
           🚧 拥挤分析
         </RouterLink>
+        <button class="theme-toggle" @click="toggleTheme" :title="isDark ? '切换到白天模式' : '切换到夜间模式'">
+          {{ isDark ? '☀️' : '🌙' }}
+        </button>
       </div>
     </nav>
     
@@ -89,6 +115,28 @@ import { RouterLink, RouterView } from 'vue-router'
 .nav-links {
   display: flex;
   gap: 1rem;
+  align-items: center;
+}
+
+.theme-toggle {
+  background: rgba(255, 255, 255, 0.15);
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  color: white;
+  width: 42px;
+  height: 42px;
+  border-radius: var(--radius-full);
+  cursor: pointer;
+  font-size: 1.1rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: var(--transition-normal);
+}
+
+.theme-toggle:hover {
+  transform: translateY(-3px) scale(1.05);
+  box-shadow: var(--shadow-lg);
+  background: rgba(255, 255, 255, 0.25);
 }
 
 .nav-link {

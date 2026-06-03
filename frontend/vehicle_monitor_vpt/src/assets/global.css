@@ -55,7 +55,6 @@
   padding: 0;
   box-sizing: border-box;
 }
-
 body {
   font-family: 'Inter', 'Segoe UI', system-ui, sans-serif;
   line-height: 1.5;
@@ -310,4 +309,63 @@ body {
   -webkit-backdrop-filter: blur(10px);
   backdrop-filter: blur(10px);
   border: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+/* ====================== 夜间主题 ====================== */
+/* 通过 <html data-theme="dark"> 切换：翻转灰阶并覆盖硬编码的白色背景表面。
+   颜色变量集中在此，组件无需逐个改写即可整体变暗。 */
+html[data-theme='dark'] {
+  --primary-color: #6366f1;
+  --secondary-color: #4f46e5;
+  --gray-50: #1e293b;
+  --gray-100: #1a2433;
+  --gray-200: #334155;
+  --gray-300: #475569;
+  --gray-400: #64748b;
+  --gray-500: #94a3b8;
+  --gray-600: #cbd5e1;
+  --gray-700: #e2e8f0;
+  --gray-800: #f1f5f9;
+  --gray-900: #f8fafc;
+  --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.4);
+  --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.5), 0 2px 4px -2px rgb(0 0 0 / 0.5);
+  --shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 0.5), 0 4px 6px -4px rgb(0 0 0 / 0.5);
+  --shadow-xl: 0 20px 25px -5px rgb(0 0 0 / 0.55), 0 8px 10px -6px rgb(0 0 0 / 0.55);
+}
+
+html[data-theme='dark'] body {
+  color: var(--gray-800);
+  background: linear-gradient(135deg, #0f172a 0%, #111827 100%);
+}
+
+/* 各视图大量使用 background: white 的卡片/容器，统一覆盖为深色表面 */
+html[data-theme='dark'] .card,
+html[data-theme='dark'] .view-header,
+html[data-theme='dark'] .controls,
+html[data-theme='dark'] .results,
+html[data-theme='dark'] .summary-card,
+html[data-theme='dark'] .stat-card,
+html[data-theme='dark'] .chart-section,
+html[data-theme='dark'] .path-list,
+html[data-theme='dark'] .map-visualization,
+html[data-theme='dark'] .alerts {
+  background: #1e293b;
+  color: var(--gray-800);
+}
+
+html[data-theme='dark'] .input-field,
+html[data-theme='dark'] .chart-select,
+html[data-theme='dark'] .tab {
+  background-color: #0f172a;
+  color: var(--gray-800);
+  border-color: var(--gray-300);
+}
+
+html[data-theme='dark'] .history-item.highlight {
+  background: linear-gradient(135deg, #1e3a5f 0%, #1e40af 100%);
+}
+
+html[data-theme='dark'] .alert-item,
+html[data-theme='dark'] .path-item.accent-3 {
+  background: #3f1d1d;
 }

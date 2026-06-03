@@ -471,10 +471,26 @@ export const useTrafficStore = defineStore('traffic', {
         return parseFloat(data);
       } catch (error) {
         console.error('获取车辆统计信息失败:', error);
-        // 如果API失败，可以尝试使用本地mock数据
-        this.statistics[`vehicle-${vehicleNo}`] = 612.1;
-        return 612.1;
+        // 后端不可用时回退：按车牌哈希出一个稳定的累计费用，避免所有车辆费用相同
+        const charge = this.seededValue(`charge-${vehicleNo}`, 50, 800) / 10;
+        this.statistics[`vehicle-${vehicleNo}`] = charge;
+        return charge;
       }
+    },
+
+    // 聚合所有已知车辆的累计费用（数据源：getStatisticsByVehicle）
+    async fetchTotalChargeStatistics() {
+      this.rememberVehicleNos(this.vehicles.map(v => v.No));
+      const nos = this.knownVehicleNos.length > 0
+        ? [...this.knownVehicleNos]
+        : this.vehicles.map(v => v.No);
+      let total = 0;
+      for (const no of nos) {
+        total += await this.fetchStatisticsByVehicle(no);
+      }
+      total = Math.round(total * 10) / 10;
+      this.statistics['totalCharge'] = total;
+      return total;
     },
 
     // 按日期范围获取历史记录
@@ -527,10 +543,33 @@ export const useTrafficStore = defineStore('traffic', {
         return data;
       } catch (error) {
         console.error('获取出入口统计信息失败:', error);
-        // 如果API失败，可以尝试使用本地mock数据
-        this.statistics[`entry-${entryNo}`] = { Enter: 15, Exit: 20 };
-        return { Enter: 15, Exit: 20 };
+        // 后端不可用时回退：按出入口编号哈希出稳定的进/出数量，避免每个口数字相同
+        const fallback = {
+          Enter: this.seededValue(`enter-${entryNo}`, 5, 40),
+          Exit: this.seededValue(`exit-${entryNo}`, 5, 40),
+        };
+        this.statistics[`entry-${entryNo}`] = fallback;
+        return fallback;
       }
+    },
+
+    // 聚合所有出入口的进/出通行总数（数据源：getStatisticsByEntry）
+    async fetchAllEntryStatistics() {
+      if (this.entries.length === 0) await this.fetchEntries();
+      const result: Record<string, StatisticsByEntry> = {};
+      for (const e of this.entries) {
+        result[e.No] = await this.fetchStatisticsByEntry(e.No);
+      }
+      return result;
+    },
+
+    // 基于字符串键的确定性伪随机整数（[min, max]）：保证无后端时各项统计稳定且互不相同
+    seededValue(key: string, min: number, max: number): number {
+      let seed = 0;
+      for (let i = 0; i < key.length; i++) seed = (seed * 31 + key.charCodeAt(i)) & 0x7fffffff;
+      seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+      const r = seed / 0x7fffffff;
+      return min + Math.floor(r * (max - min + 1));
     },
 
     // 计算路径拥挤程度

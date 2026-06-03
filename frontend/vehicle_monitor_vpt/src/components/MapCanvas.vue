@@ -1,15 +1,37 @@
 <template>
-  <div class="map-container" ref="containerRef">
-    <canvas 
-      ref="canvasRef" 
-      :width="canvasWidth" 
+  <div
+    class="map-container"
+    ref="containerRef"
+    @wheel.prevent="handleWheel"
+    @mousedown="handleMouseDown"
+    @mousemove="handleMouseMove"
+    @mouseup="handleMouseUp"
+    @mouseleave="handleMouseUp"
+  >
+    <!-- 静态层：道路网络 / 出入口 / 检查点（仅在数据或视图变换变化时重绘） -->
+    <canvas
+      ref="staticCanvasRef"
+      :width="canvasWidth"
       :height="canvasHeight"
-      class="map-canvas"
+      class="map-canvas static-layer"
+    />
+    <!-- 动态层：拥堵热力图 / 车辆轨迹 / 车辆（requestAnimationFrame 逐帧重绘 + 插值） -->
+    <canvas
+      ref="dynamicCanvasRef"
+      :width="canvasWidth"
+      :height="canvasHeight"
+      class="map-canvas dynamic-layer"
+      :class="{ panning: isPanning }"
       @click="handleCanvasClick"
-
     />
 
-    
+    <!-- 缩放控制 -->
+    <div class="map-zoom-controls">
+      <button class="zoom-btn" @click="zoomByButton(1.2)" title="放大">＋</button>
+      <button class="zoom-btn" @click="zoomByButton(1 / 1.2)" title="缩小">－</button>
+      <button class="zoom-btn" @click="resetView" title="复位">⟲</button>
+    </div>
+
     <!-- 选中车辆信息面板 -->
     <div v-if="selectedVehicleInfo" class="vehicle-info-panel">
       <h3>车辆详细信息</h3>
@@ -43,7 +65,7 @@
 import { ref, onMounted, onUnmounted, computed, nextTick, watch } from 'vue';
 import { storeToRefs } from 'pinia';
 import { useTrafficStore } from '@/store/trafficStore';
-import { formatDate } from '@/utils';
+import { formatDate, interpolatePosition } from '@/utils';
 import type { VehiclePosition, Entry, Checkpoint } from '@/types';
 
 // 定义props
@@ -60,8 +82,26 @@ const props = withDefaults(defineProps<Props>(), {
 });
 
 // 引用画布元素和容器
-const canvasRef = ref<HTMLCanvasElement | null>(null);
+const staticCanvasRef = ref<HTMLCanvasElement | null>(null);
+const dynamicCanvasRef = ref<HTMLCanvasElement | null>(null);
 const containerRef = ref<HTMLDivElement | null>(null);
+
+// 视图变换：缩放 + 平移（逻辑坐标 → 显示坐标）。所有绘制在应用该变换后的上下文中进行。
+const viewScale = ref(1);
+const viewOffset = ref({ x: 0, y: 0 });
+const isPanning = ref(false);
+let panStart = { x: 0, y: 0 };
+let panOrigin = { x: 0, y: 0 };
+let didPan = false;
+
+// 车辆插值状态：在两次轮询（约 1s）之间用 requestAnimationFrame 平滑过渡
+// renderPositions 为"当前帧实际绘制位置"，会从上一位置线性插值到最新目标位置
+const renderPositions = new Map<string, { Pos_X: number; Pos_Y: number }>();
+const fromPositions = new Map<string, { Pos_X: number; Pos_Y: number }>();
+const targetPositions = new Map<string, { Pos_X: number; Pos_Y: number }>();
+let tweenStart = 0;
+const TWEEN_MS = 1000; // 与 MapView 轮询间隔一致
+let rafId: number | null = null;
 
 
 
@@ -163,55 +203,67 @@ const drawSegmentedLine = (ctx: CanvasRenderingContext2D, startX: number, startY
 
 // 获取 canvas 实际显示的缩放和偏移
 const getCanvasDisplayInfo = () => {
-  if (!canvasRef.value || !containerRef.value) {
+  if (!dynamicCanvasRef.value || !containerRef.value) {
     return { scaleX: 1, scaleY: 1, offsetX: 0, offsetY: 0 };
   }
 
-  const canvasStyle = window.getComputedStyle(canvasRef.value);
+  const canvasStyle = window.getComputedStyle(dynamicCanvasRef.value);
   const containerRect = containerRef.value.getBoundingClientRect();
-  
+
   // 获取 canvas 的实际显示尺寸
   const displayWidth = parseFloat(canvasStyle.width);
   const displayHeight = parseFloat(canvasStyle.height);
-  
+
   // 计算缩放比例
   const scaleX = displayWidth / props.canvasWidth;
   const scaleY = displayHeight / props.canvasHeight;
-  
+
   // 计算偏移（居中显示时的偏移）
   const offsetX = (containerRect.width - displayWidth) / 2;
   const offsetY = (containerRect.height - displayHeight) / 2;
-  
+
   return { scaleX, scaleY, offsetX, offsetY };
+};
+
+// 屏幕坐标 → canvas 逻辑坐标（先消除 CSS 适配缩放，再消除视图缩放/平移）
+const screenToLogical = (clientX: number, clientY: number) => {
+  const rect = containerRef.value!.getBoundingClientRect();
+  const { scaleX, scaleY, offsetX, offsetY } = getCanvasDisplayInfo();
+  // 1) 还原到 canvas 内部像素坐标
+  const cx = (clientX - rect.left - offsetX) / scaleX;
+  const cy = (clientY - rect.top - offsetY) / scaleY;
+  // 2) 还原视图变换（缩放 + 平移）
+  return {
+    x: (cx - viewOffset.value.x) / viewScale.value,
+    y: (cy - viewOffset.value.y) / viewScale.value,
+  };
 };
 
 // 鼠标事件处理
 const handleCanvasClick = (event: MouseEvent) => {
-  if (!canvasRef.value || !containerRef.value) return;
-  
-  const rect = containerRef.value.getBoundingClientRect();
-  const { scaleX, scaleY, offsetX, offsetY } = getCanvasDisplayInfo();
-  
-  // 计算相对于 canvas 逻辑坐标系的坐标
-  const x = (event.clientX - rect.left - offsetX) / scaleX;
-  const y = (event.clientY - rect.top - offsetY) / scaleY;
-  
+  if (!dynamicCanvasRef.value || !containerRef.value) return;
+  // 刚刚发生过拖拽则不触发选择
+  if (didPan) { didPan = false; return; }
+
+  // 计算相对于 canvas 逻辑坐标系的坐标（含视图变换）
+  const { x, y } = screenToLogical(event.clientX, event.clientY);
+
   // 检查是否点击了某个车辆
   // 使用更精确的检测方法，考虑车辆在画布上的实际渲染大小
   const clickedVehicle = activeVehicles.value.find(vehicle => {
     // 转换车辆坐标到画布坐标系
     const vehicleConverted = convertCoord(vehicle.Position.Pos_X, vehicle.Position.Pos_Y);
-    
+
     // 计算鼠标点击点与车辆中心的距离
     const distance = Math.sqrt(
-      Math.pow(vehicleConverted.x - x, 2) + 
+      Math.pow(vehicleConverted.x - x, 2) +
       Math.pow(vehicleConverted.y - y, 2)
     );
-    
-    // 增大点击检测半径，提高易用性
-    return distance < 40; // 增大到40像素范围内的点击视为有效点击，考虑图片大小
+
+    // 命中半径随缩放调整：放大后图标显得更大，命中范围相应缩小（逻辑坐标）
+    return distance < 40 / viewScale.value;
   });
-  
+
   if (clickedVehicle) {
     store.selectVehicle(clickedVehicle.No);
     // 可以在这里触发车辆详情面板的显示
@@ -219,6 +271,77 @@ const handleCanvasClick = (event: MouseEvent) => {
   } else {
     store.clearSelection();
   }
+};
+
+// ===== 缩放 / 平移交互 =====
+const MIN_SCALE = 0.5;
+const MAX_SCALE = 5;
+
+const clampOffset = () => {
+  // 限制平移范围，避免把地图拖出可视区太远
+  const w = props.canvasWidth, h = props.canvasHeight;
+  const maxX = w * (viewScale.value - 1);
+  const maxY = h * (viewScale.value - 1);
+  viewOffset.value.x = Math.min(0, Math.max(-maxX, viewOffset.value.x));
+  viewOffset.value.y = Math.min(0, Math.max(-maxY, viewOffset.value.y));
+};
+
+// 以某个逻辑画布点为锚点缩放（滚轮：锚点为鼠标位置）
+const zoomAt = (canvasX: number, canvasY: number, factor: number) => {
+  const newScale = Math.min(MAX_SCALE, Math.max(MIN_SCALE, viewScale.value * factor));
+  if (newScale === viewScale.value) return;
+  // 保持锚点在缩放前后对应同一逻辑位置
+  const logicalX = (canvasX - viewOffset.value.x) / viewScale.value;
+  const logicalY = (canvasY - viewOffset.value.y) / viewScale.value;
+  viewOffset.value.x = canvasX - logicalX * newScale;
+  viewOffset.value.y = canvasY - logicalY * newScale;
+  viewScale.value = newScale;
+  clampOffset();
+  drawStatic();
+};
+
+const handleWheel = (event: WheelEvent) => {
+  if (!containerRef.value) return;
+  const rect = containerRef.value.getBoundingClientRect();
+  const { scaleX, scaleY, offsetX, offsetY } = getCanvasDisplayInfo();
+  const canvasX = (event.clientX - rect.left - offsetX) / scaleX;
+  const canvasY = (event.clientY - rect.top - offsetY) / scaleY;
+  zoomAt(canvasX, canvasY, event.deltaY < 0 ? 1.1 : 1 / 1.1);
+};
+
+// 按钮缩放：以画布中心为锚点
+const zoomByButton = (factor: number) => {
+  zoomAt(props.canvasWidth / 2, props.canvasHeight / 2, factor);
+};
+
+const resetView = () => {
+  viewScale.value = 1;
+  viewOffset.value = { x: 0, y: 0 };
+  drawStatic();
+};
+
+const handleMouseDown = (event: MouseEvent) => {
+  isPanning.value = true;
+  didPan = false;
+  panStart = { x: event.clientX, y: event.clientY };
+  panOrigin = { ...viewOffset.value };
+};
+
+const handleMouseMove = (event: MouseEvent) => {
+  if (!isPanning.value) return;
+  const { scaleX } = getCanvasDisplayInfo();
+  const dx = (event.clientX - panStart.x) / scaleX;
+  const dy = (event.clientY - panStart.y) / scaleX;
+  if (Math.abs(event.clientX - panStart.x) > 3 || Math.abs(event.clientY - panStart.y) > 3) {
+    didPan = true;
+  }
+  viewOffset.value = { x: panOrigin.x + dx, y: panOrigin.y + dy };
+  clampOffset();
+  drawStatic();
+};
+
+const handleMouseUp = () => {
+  isPanning.value = false;
 };
 
 // 关闭车辆信息面板
@@ -313,50 +436,54 @@ const getCarImage = (vehicleNo: string) => {
   return lastDigit % 2 === 0 ? car1Image : car2Image;
 };
 
-// 绘制函数
-const drawMap = () => {
-  if (!canvasRef.value) return;
-  
-  const ctx = canvasRef.value.getContext('2d');
-  if (!ctx) return;
-  
-  // 等待图片加载完成
-  if (!imagesLoaded.value) {
-    // 检查所有图片是否都已加载
-    if (entryImage.complete && checkpointImage.complete && car1Image.complete && car2Image.complete) {
-      imagesLoaded.value = true;
-    } else {
-      // 如果图片还没加载完成，设置一个延迟重新绘制
-      setTimeout(drawMap, 100);
-      return;
-    }
-  }
-  
-  // 清空画布
+// 应用当前视图变换（平移 + 缩放）到上下文。绘制结束后调用 ctx.restore() 还原。
+const applyViewTransform = (ctx: CanvasRenderingContext2D) => {
+  ctx.save();
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.clearRect(0, 0, props.canvasWidth, props.canvasHeight);
-  
-  // 绘制道路网络背景
+  ctx.translate(viewOffset.value.x, viewOffset.value.y);
+  ctx.scale(viewScale.value, viewScale.value);
+};
+
+// 确认四张图片已加载；未就绪时延迟重绘
+const ensureImagesLoaded = (retry: () => void): boolean => {
+  if (imagesLoaded.value) return true;
+  if (entryImage.complete && checkpointImage.complete && car1Image.complete && car2Image.complete) {
+    imagesLoaded.value = true;
+    return true;
+  }
+  setTimeout(retry, 100);
+  return false;
+};
+
+// 静态层绘制：道路网络 / 出入口 / 检查点（数据或视图变换变化时调用，不参与逐帧动画）
+const drawStatic = () => {
+  if (!staticCanvasRef.value) return;
+  const ctx = staticCanvasRef.value.getContext('2d');
+  if (!ctx) return;
+  if (!ensureImagesLoaded(drawStatic)) return;
+
+  applyViewTransform(ctx);
   drawRoadNetwork(ctx);
-  
-  // 绘制路径拥挤程度热力图（如果启用）
+  drawEntries(ctx);
+  drawCheckpoints(ctx);
+  ctx.restore();
+};
+
+// 动态层绘制：拥堵热力图 / 车辆轨迹 / 车辆（由 requestAnimationFrame 每帧调用）
+const drawDynamic = () => {
+  if (!dynamicCanvasRef.value) return;
+  const ctx = dynamicCanvasRef.value.getContext('2d');
+  if (!ctx) return;
+  if (!ensureImagesLoaded(drawDynamic)) return;
+
+  applyViewTransform(ctx);
   if (props.showHeatmap) {
     drawPathCongestion(ctx);
   }
-  
-  // 绘制出入口
-  drawEntries(ctx);
-  
-  // 绘制检查点
-  drawCheckpoints(ctx);
-  
-  // 绘制路径连接线 - 注释掉此函数，因为道路网络已在drawRoadNetwork中定义
-  // drawPaths(ctx);
-  
-  // 绘制车辆路径（如果有的话）
   drawVehiclePath(ctx);
-  
-  // 绘制车辆
   drawVehicles(ctx);
+  ctx.restore();
 };
 
 // 绘制道路网络背景
@@ -687,12 +814,13 @@ const drawVehicles = (ctx: CanvasRenderingContext2D) => {
   activeVehicles.value.forEach(vehicle => {
     // 根据车辆尾号选择对应的车辆图片
     const carImg = getCarImage(vehicle.No);
-    
+
     // 计算车辆的方向角度
     const angle = calculateVehicleAngle(vehicle);
-    
-    // 转换车辆坐标
-    const vehicleConverted = convertCoord(vehicle.Position.Pos_X, vehicle.Position.Pos_Y);
+
+    // 使用插值后的渲染位置（两次轮询间平滑过渡），未就绪则回退到真实位置
+    const renderPos = renderPositions.get(vehicle.No) ?? vehicle.Position;
+    const vehicleConverted = convertCoord(renderPos.Pos_X, renderPos.Pos_Y);
     
     // 保存当前上下文状态
     ctx.save();
@@ -739,33 +867,60 @@ const drawVehicles = (ctx: CanvasRenderingContext2D) => {
   });
 };
 
-// 监听数据变化并重绘
+// 静态层只在出入口/检查点数据变化时重绘（视图缩放/平移由交互直接调用 drawStatic）
 watch(
-  [
-    entries,
-    checkpoints,
-    activeVehicles,
-    () => store.pathCongestion,
-    () => store.vehiclePathToDisplay,
-    () => store.selectedVehicle,
-    () => props.showHeatmap,
-  ],
+  [entries, checkpoints],
   () => {
-    nextTick(() => {
-      drawMap();
-    });
+    nextTick(() => drawStatic());
   },
   { deep: true },
 );
+
+// 车辆位置更新时，建立插值补间：从"当前渲染位置"过渡到"最新目标位置"
+watch(
+  () => store.vehicles.map(v => ({ No: v.No, x: v.Position.Pos_X, y: v.Position.Pos_Y })),
+  () => {
+    const now = performance.now();
+    const seen = new Set<string>();
+    for (const v of store.vehicles) {
+      seen.add(v.No);
+      const target = { Pos_X: v.Position.Pos_X, Pos_Y: v.Position.Pos_Y };
+      // 起点 = 上一帧的渲染位置；首次出现则直接落到目标位置（无补间）
+      const from = renderPositions.get(v.No) ?? target;
+      fromPositions.set(v.No, from);
+      targetPositions.set(v.No, target);
+      if (!renderPositions.has(v.No)) renderPositions.set(v.No, target);
+    }
+    // 清理已消失的车辆，避免 Map 无限增长
+    for (const no of [...renderPositions.keys()]) {
+      if (!seen.has(no)) {
+        renderPositions.delete(no);
+        fromPositions.delete(no);
+        targetPositions.delete(no);
+      }
+    }
+    tweenStart = now;
+  },
+  { deep: true },
+);
+
+// requestAnimationFrame 动画循环：逐帧把渲染位置从 from 线性插值到 target，再重绘动态层
+const animationLoop = () => {
+  const progress = Math.min(1, (performance.now() - tweenStart) / TWEEN_MS);
+  for (const [no, target] of targetPositions) {
+    const from = fromPositions.get(no) ?? target;
+    renderPositions.set(no, interpolatePosition(from, target, progress));
+  }
+  drawDynamic();
+  rafId = requestAnimationFrame(animationLoop);
+};
 
 // 处理窗口大小变化
 const handleResize = () => {
   if (containerRef.value) {
     // 这里我们不需要改变 canvas 的逻辑尺寸，只改变显示尺寸
     // 因为坐标系统是基于逻辑尺寸的
-    nextTick(() => {
-      drawMap();
-    });
+    nextTick(() => drawStatic());
   }
 };
 
@@ -775,23 +930,27 @@ onMounted(() => {
   const checkImages = () => {
     if (entryImage.complete && checkpointImage.complete && car1Image.complete && car2Image.complete) {
       imagesLoaded.value = true;
-      nextTick(() => {
-        drawMap();
-      });
+      nextTick(() => drawStatic());
     } else {
       setTimeout(checkImages, 50);
     }
   };
-  
+
   // 监听窗口大小变化
   window.addEventListener('resize', handleResize);
-  
+
   checkImages();
+  // 启动动态层动画循环
+  rafId = requestAnimationFrame(animationLoop);
 });
 
 // 清理
 onUnmounted(() => {
   window.removeEventListener('resize', handleResize);
+  if (rafId !== null) {
+    cancelAnimationFrame(rafId);
+    rafId = null;
+  }
 });
 </script>
 
@@ -812,6 +971,51 @@ onUnmounted(() => {
   image-rendering: -webkit-optimize-contrast;
   image-rendering: crisp-edges;
   image-rendering: pixelated;
+}
+/* 双层 Canvas：静态层在底，动态层叠加在上方 */
+.static-layer {
+  position: absolute;
+  top: 0;
+  left: 0;
+}
+.dynamic-layer {
+  position: relative;
+  z-index: 1;
+  cursor: grab;
+}
+.dynamic-layer.panning {
+  cursor: grabbing;
+}
+
+/* 缩放控制按钮 */
+.map-zoom-controls {
+  position: absolute;
+  bottom: 16px;
+  right: 16px;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.zoom-btn {
+  width: 36px;
+  height: 36px;
+  border: none;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.92);
+  color: #1f2937;
+  font-size: 1.1rem;
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
+  transition: background 0.2s, transform 0.1s;
+}
+.zoom-btn:hover {
+  background: #fff;
+  transform: translateY(-1px);
+}
+.zoom-btn:active {
+  transform: translateY(0);
 }
 .tooltip {
   position: fixed;

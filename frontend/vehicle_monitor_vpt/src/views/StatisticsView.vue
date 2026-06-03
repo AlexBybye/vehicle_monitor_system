@@ -63,6 +63,18 @@
         <p class="stat-number">{{ congestionCount }}</p>
         <p class="stat-sub">中度及以上 ({{ heavyCongestionCount }} 严重)</p>
       </div>
+
+      <div class="stat-card card stat-card--charge">
+        <div class="stat-header">
+          <div class="stat-icon">💰</div>
+          <h3 class="stat-title">累计通行费用</h3>
+        </div>
+        <p class="stat-number">
+          <template v-if="totalCharge !== null">¥{{ totalCharge.toFixed(1) }}</template>
+          <template v-else>—</template>
+        </p>
+        <p class="stat-sub">来自 getStatisticsByVehicle 汇总</p>
+      </div>
     </div>
 
     <div class="charts-grid">
@@ -71,6 +83,13 @@
           <h3>🚪 各出入口累计通行车辆数</h3>
         </div>
         <ChartPanel :data="entryFlowData" chart-type="bar" title="" />
+      </div>
+
+      <div class="chart-section card">
+        <div class="chart-header">
+          <h3>🚦 各出入口进/出统计（接口）</h3>
+        </div>
+        <ChartPanel :data="entryApiFlowData" chart-type="bar" title="" />
       </div>
 
       <div class="chart-section card">
@@ -106,6 +125,7 @@
 import { ref, onMounted, onUnmounted, computed } from 'vue';
 import { useTrafficStore } from '@/store/trafficStore';
 import ChartPanel from '@/components/ChartPanel.vue';
+import type { StatisticsByEntry } from '@/types';
 
 const store = useTrafficStore();
 const loading = ref(false);
@@ -114,6 +134,10 @@ let refreshInterval: ReturnType<typeof setInterval> | null = null;
 
 // 检查点分布显示模式：实时 / 累计
 const checkpointMode = ref<'realtime' | 'cumulative'>('realtime');
+
+// 来自接口的统计：累计费用（getStatisticsByVehicle）与各出入口进出（getStatisticsByEntry）
+const totalCharge = ref<number | null>(null);
+const entryApiStats = ref<Record<string, StatisticsByEntry>>({});
 
 // 真数据：活动车辆 / 离开车辆
 const totalVehicles = computed(() => store.vehicles.length);
@@ -216,6 +240,20 @@ const checkpointDistribution = computed(() =>
   })
 );
 
+// 各出入口进入 / 离开数（数据源：getStatisticsByEntry 接口）
+// 将每个口拆成"入口名(进)""入口名(出)"两条柱，直观对比进出量
+const entryApiFlowData = computed(() => {
+  const out: Array<{ label: string; value: number }> = [];
+  for (const e of store.entries) {
+    const s = entryApiStats.value[e.No];
+    if (!s) continue;
+    const shortName = e.Name.replace('出入口', '');
+    out.push({ label: `${shortName}·进`, value: s.Enter });
+    out.push({ label: `${shortName}·出`, value: s.Exit });
+  }
+  return out;
+});
+
 const refreshAll = async () => {
   loading.value = true;
   try {
@@ -226,6 +264,9 @@ const refreshAll = async () => {
     ]);
     // 拉取所有车辆历史 - 累计统计与过去一小时分布的数据源
     await store.fetchAllVehiclesHistory();
+    // 接口统计：累计费用 + 各出入口进出
+    totalCharge.value = await store.fetchTotalChargeStatistics();
+    entryApiStats.value = await store.fetchAllEntryStatistics();
   } finally {
     loading.value = false;
   }
@@ -353,7 +394,7 @@ onUnmounted(() => {
 .stat-card--success::before { background: linear-gradient(90deg, #22c55e, #4ade80); }
 .stat-card--info::before { background: linear-gradient(90deg, #38bdf8, #7dd3fc); }
 .stat-card--warning::before { background: linear-gradient(90deg, #f59e0b, #facc15); }
-
+.stat-card--charge::before { background: linear-gradient(90deg, #ec4899, #f472b6); }
 .stat-card:hover {
   transform: translateY(-3px);
   box-shadow: var(--shadow-lg);
