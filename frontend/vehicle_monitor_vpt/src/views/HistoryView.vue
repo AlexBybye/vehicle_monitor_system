@@ -3,71 +3,67 @@
     <div class="view-header">
       <h2 class="title">📋 历史记录查询</h2>
     </div>
-    <div class="query-options">
-      <div class="vehicle-selector">
-        <label class="input-label">🚗 方式一:选择现运行车辆:</label>
-        <select v-model="selectedVehicleNo" @change="loadVehicleHistory" class="input-field">
-          <option value="">请选择车辆</option>
-          <option v-for="vehicle in store.vehicles" :key="vehicle.No" :value="vehicle.No">
-            {{ vehicle.No }} ({{ vehicle.Position.Pos_X }}, {{ vehicle.Position.Pos_Y }})
-          </option>
-        </select>
+    <div class="controls card">
+      <div class="query-options">
+        <div class="vehicle-selector">
+          <label class="input-label">🚗 方式一:选择现运行车辆:</label>
+          <select v-model="selectedVehicleNo" @change="loadVehicleHistory" class="input-field">
+            <option value="">请选择车辆</option>
+            <option v-for="vehicle in store.vehicles" :key="vehicle.No" :value="vehicle.No">
+              {{ vehicle.No }} ({{ vehicle.Position.Pos_X }}, {{ vehicle.Position.Pos_Y }})
+            </option>
+          </select>
+        </div>
+
+        <div class="manual-search">
+          <label class="input-label">🔍 方式二:手动输入车牌号:</label>
+          <div class="search-input-wrapper">
+            <input v-model="manualVehicleNo" type="text" placeholder="请输入车牌号" class="input-field"
+              @keyup.enter="handleManualSearch" />
+            <button @click="handleManualSearch" class="btn btn-primary">
+              搜索
+            </button>
+          </div>
+        </div>
       </div>
-        
-      <div class="manual-search">
-        <label class="input-label">🔍 方式二:手动输入车牌号:</label>
-        <div class="search-input-wrapper">
-          <input 
-            v-model="manualVehicleNo" 
-            type="text" 
-            placeholder="请输入车牌号" 
-            class="input-field"
-            @keyup.enter="handleManualSearch"
-          />
-          <button @click="handleManualSearch" class="btn btn-primary">
-            搜索
+
+      <div class="date-range-controls">
+        <div class="date-time-range">
+          <div class="datetime-group">
+            <label class="input-label">📅 起始时间:</label>
+            <div class="datetime-inputs">
+              <input type="date" v-model="startDate" class="input-field" @change="validateDateRange">
+              <input type="time" v-model="startTime" class="input-field" @change="validateDateRange">
+              <span v-if="dateRangeError" class="error-message">{{ dateRangeError }}</span>
+            </div>
+          </div>
+          <div class="datetime-group">
+            <label class="input-label">🔚 结束时间:</label>
+            <div class="datetime-inputs">
+              <input type="date" v-model="endDate" class="input-field" @change="validateDateRange">
+              <input type="time" v-model="endTime" class="input-field" @change="validateDateRange">
+            </div>
+          </div>
+          <div class="datetime-actions">
+            <button @click="filterByDate" class="btn btn-primary datetime-filter-btn" :disabled="!!dateRangeError">
+              📅 按时间筛选
+            </button>
+            <button @click="clearDateFilter" class="btn btn-secondary datetime-clear-btn">
+              🗑️ 清空筛选
+            </button>
+          </div>
+        </div>
+
+        <div class="actions">
+          <button @click="handleExportToCSV" class="btn btn-success btn-full-width">
+            📥 导出CSV
+          </button>
+          <button @click="handleExportToJSON" class="btn btn-info btn-full-width">
+            📄 导出JSON
           </button>
         </div>
       </div>
     </div>
-      
-    <div class="date-range-controls">
-      <div class="date-time-range">
-        <div class="datetime-group">
-          <label class="input-label">📅 起始时间:</label>
-          <div class="datetime-inputs">
-            <input type="date" v-model="startDate" class="input-field" @change="validateDateRange">
-            <input type="time" v-model="startTime" class="input-field" @change="validateDateRange">
-            <span v-if="dateRangeError" class="error-message">{{ dateRangeError }}</span>
-          </div>
-        </div>
-        <div class="datetime-group">
-          <label class="input-label">🔚 结束时间:</label>
-          <div class="datetime-inputs">
-            <input type="date" v-model="endDate" class="input-field" @change="validateDateRange">
-            <input type="time" v-model="endTime" class="input-field" @change="validateDateRange">
-          </div>
-        </div>
-        <div class="datetime-actions">
-          <button @click="filterByDate" class="btn btn-primary datetime-filter-btn" :disabled="!!dateRangeError">
-            📅 按时间筛选
-          </button>
-          <button @click="clearDateFilter" class="btn btn-secondary datetime-clear-btn">
-            🗑️ 清空筛选
-          </button>
-        </div>
-      </div>
-        
-      <div class="actions">
-        <button @click="handleExportToCSV" class="btn btn-success btn-full-width">
-          📥 导出CSV
-        </button>
-        <button @click="handleExportToJSON" class="btn btn-info btn-full-width">
-          📄 导出JSON
-        </button>
-      </div>
-    </div>
-  </div>
 
     <div class="results card">
       <div class="stats-grid">
@@ -84,16 +80,11 @@
           <div class="stat-label">⚡ 最高速度 (km/h)</div>
         </div>
       </div>
-      
+
       <div class="history-list">
-        <div 
-          v-for="(record, index) in paginatedRecords" 
-          :key="index" 
-          class="history-item card"
+        <div v-for="(record, index) in paginatedRecords" :key="index" class="history-item card"
           :class="{ 'highlight': hoveredVehicle && hoveredVehicle.VehicleNo === record.VehicleNo && hoveredVehicle.EnterTime === record.EnterTime }"
-          @mouseenter="hoveredVehicle = record"
-          @mouseleave="hoveredVehicle = null"
-        >
+          @mouseenter="hoveredVehicle = record" @mouseleave="hoveredVehicle = null">
           <div class="record-header">
             <div class="vehicle-info">
               <span class="vehicle-no">🏷️ {{ record.VehicleNo }}</span>
@@ -125,27 +116,20 @@
           </div>
         </div>
       </div>
-      
+
       <div class="pagination">
-        <button 
-          @click="prevPage" 
-          :disabled="currentPage === 1" 
-          class="btn btn-secondary"
-        >
+        <button @click="prevPage" :disabled="currentPage === 1" class="btn btn-secondary">
           ⬅️ 上一页
         </button>
         <span class="page-info">
           第 {{ currentPage }} 页，共 {{ totalPages }} 页 ({{ store.historyRecords.length }} 条记录)
         </span>
-        <button 
-          @click="nextPage" 
-          :disabled="currentPage === totalPages" 
-          class="btn btn-secondary"
-        >
+        <button @click="nextPage" :disabled="currentPage === totalPages" class="btn btn-secondary">
           下一页 ➡️
         </button>
       </div>
     </div>
+  </div>
 </template>
 
 <script setup lang="ts">
@@ -211,7 +195,7 @@ const validateDateRange = () => {
     // 组合日期和时间
     const startDateTime = new Date(`${startDate.value}T${startTime.value}`);
     const endDateTime = new Date(`${endDate.value}T${endTime.value}`);
-    
+
     if (startDateTime > endDateTime) {
       dateRangeError.value = '起始时间不能晚于结束时间！';
       return false;
@@ -228,40 +212,40 @@ const filterByDate = async () => {
   if (!validateDateRange()) {
     return;
   }
-  
+
   if (startDate.value && endDate.value) {
     // 组合日期和时间
     const startDateTime = `${startDate.value}T${startTime.value}`;
     const endDateTime = `${endDate.value}T${endTime.value}`;
-    
+
     // 如果还没有保存原始记录，则保存一份
     if (originalHistoryRecords.value.length === 0) {
       originalHistoryRecords.value = [...store.historyRecords];
     }
-    
+
     // 从原始记录中筛选 - 直接使用原始时间戳进行比较
     const start = new Date(startDateTime);
     const end = new Date(endDateTime);
-    
+
     const filteredRecords = originalHistoryRecords.value.filter(record => {
       // 直接解析原始时间戳格式 /Date(1756871452790+0800)/
       const timeMatch = record.EnterTime?.match(/\/Date\((\d+)\+\d+\)\//);
       if (timeMatch && timeMatch[1]) {
         const timestamp = parseInt(timeMatch[1], 10);
         const recordDate = new Date(timestamp);
-        
+
         // 调试输出
         console.log('Record time:', recordDate, 'Start:', start, 'End:', end, 'Match:', recordDate >= start && recordDate <= end);
-        
+
         return recordDate >= start && recordDate <= end;
       }
       return false; // 如果无法解析时间，则排除该记录
     });
-    
+
     // 更新显示的记录
     store.historyRecords = filteredRecords;
     currentPage.value = 1; // 重置到第一页
-    
+
     console.log('Filtered records:', filteredRecords);
   }
 };
@@ -273,7 +257,7 @@ const clearDateFilter = () => {
   startTime.value = '00:00';
   endTime.value = '23:59';
   dateRangeError.value = '';
-  
+
   // 恢复原始记录（如果存在）
   if (originalHistoryRecords.value.length > 0) {
     store.historyRecords = [...originalHistoryRecords.value];
@@ -519,7 +503,8 @@ const showVehicleDetails = async (record: VehicleHistory) => {
   flex-wrap: wrap;
 }
 
-.vehicle-selector, .manual-search {
+.vehicle-selector,
+.manual-search {
   flex: 1;
   min-width: 300px;
 }
@@ -616,7 +601,7 @@ const showVehicleDetails = async (record: VehicleHistory) => {
 .vehicle-selector {
   margin-bottom: 1.5rem;
   padding: 1.5rem;
-  background: white;
+  background: inherit;
   border: none;
 }
 
@@ -887,16 +872,16 @@ const showVehicleDetails = async (record: VehicleHistory) => {
     flex-direction: column;
     align-items: stretch;
   }
-  
+
   .stats-grid {
     grid-template-columns: 1fr;
   }
-  
+
   .pagination {
     flex-direction: column;
     gap: 0.5rem;
   }
-  
+
   .page-info {
     min-width: auto;
   }
